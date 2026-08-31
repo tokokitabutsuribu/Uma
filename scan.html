@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>QR受付端末</title>
-<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="/vendor/html5-qrcode/html5-qrcode.min.js"></script>
 <script src="/socket.io/socket.io.js"></script>
 <style>
   :root{
@@ -190,6 +190,12 @@
 </div>
 
 <script>
+  // 画面上でもエラーが分かるように（コンソールを開けない現場での確認用）
+  window.addEventListener('error', (e) => {
+    const el = document.getElementById('resultId');
+    if (el) el.textContent = `エラー: ${e.message || 'スクリプトの読み込みに失敗しました'}`;
+  });
+
   const socket = io();
   const statusDot = document.getElementById('statusDot');
   const resultPanel = document.getElementById('resultPanel');

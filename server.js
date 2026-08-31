@@ -31,6 +31,8 @@ const INITIAL_SCORE = 1000;
 const CHOICE_COUNT = 5;
 
 app.use(express.static('public'));
+// html5-qrcode を外部CDNに頼らず自己ホスト化（npm installでnode_modulesに入る）
+app.use('/vendor/html5-qrcode', express.static(path.join(__dirname, 'node_modules', 'html5-qrcode')));
 
 // ---------- データ永続化 ----------
 
