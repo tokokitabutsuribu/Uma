@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>受付・スコア管理ダッシュボード</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  :root{
+    --ink:#151a23; --paper:#f6f5f2; --line:#e2dfd6;
+    --teal:#0f6e64; --amber:#b5622a; --panel:#ffffff; --blue:#2c6b9e; --purple:#6e4fa3;
+  }
+  *{box-sizing:border-box;}
+  body{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif; background:var(--paper); color:var(--ink); }
+  header{
+    padding:20px 28px 16px; border-bottom:1px solid var(--line);
+    display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:14px;
+  }
+  header h1{ margin:0; font-size:22px; font-weight:700; }
+  .status-line{ font-size:13px; color:#6b7280; margin-top:4px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  .status-dot{ width:8px;height:8px;border-radius:50%;background:#c9cdd4; }
+  .status-dot.connected{ background:var(--teal); }
+  .round-pill{ padding:2px 9px; border-radius:6px; background:#eef0ec; font-size:12px; }
+  .round-pill.open{ background:#e0f0ec; color:var(--teal); }
+  .round-pill.closed{ background:#f3e6da; color:var(--amber); }
+  .admin-name-row{ display:flex; align-items:center; gap:6px; margin-top:8px; }
+  .admin-name-row label{ font-size:12px; color:#6b7280; }
+  .admin-name-row input{ padding:6px 10px; border-radius:7px; border:1px solid var(--line); font-size:13px; width:160px; }
+
+  .stats{ display:flex; gap:22px; }
+  .stat{ text-align:right; }
+  .stat .num{ font-size:26px; font-weight:700; line-height:1; }
+  .stat .label{ font-size:12px; color:#6b7280; margin-top:4px; }
+
+  nav.tabs{ display:flex; gap:4px; padding:14px 28px 0; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  nav.tabs button{
+    font-family:inherit; font-size:13px; padding:9px 16px; border:none; background:none; cursor:pointer;
+    color:#6b7280; border-bottom:2px solid transparent; margin-bottom:-1px;
+  }
+  nav.tabs button.active{ color:var(--ink); border-bottom-color:var(--teal); font-weight:600; }
+
+  .toolbar{ padding:14px 28px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  .toolbar.hidden{ display:none; }
+  .toolbar input{ flex:1; max-width:320px; padding:9px 12px; border-radius:8px; border:1px solid var(--line); font-size:14px; }
+  button.btn{ font-family:inherit; font-size:13px; padding:9px 16px; border-radius:8px; border:1px solid var(--line); background:var(--panel); cursor:pointer; color:var(--ink); }
+  button.btn.danger{ color:var(--amber); border-color:#e6c3ad; }
+  button.btn.primary{ background:var(--teal); color:#fff; border-color:var(--teal); }
+  button.btn.primary:hover{ background:#0c5a52; }
+  button.btn:hover{ background:#f0efe9; }
+  button.btn:disabled{ opacity:0.4; cursor:default; }
+  .spacer{ flex:1; }
+
+  main{ padding:0 28px 40px; }
+  .view{ display:none; }
+  .view.active{ display:block; }
+
+  table{ width:100%; border-collapse:collapse; margin-top:10px; }
+  thead th{ text-align:left; font-size:12px; color:#6b7280; font-weight:600; padding:10px 12px; border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--paper); }
+  tbody td{ padding:12px; border-bottom:1px solid var(--line); font-size:14px; }
+  tbody tr.new-row{ animation: flash 1s ease; }
+  @keyframes flash{ from{ background:#e4f3f0; } to{ background:transparent; } }
+
+  .device-tag{ display:inline-block; padding:3px 9px; border-radius:6px; background:#eef0ec; font-size:12px; color:#3f4650; }
+  .id-mono{ font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
+  .score-cell{ display:flex; align-items:center; gap:10px; }
+  .score-value{ font-weight:700; font-size:15px; min-width:52px; }
+  .edit-link{ font-size:12px; color:var(--teal); background:none; border:none; cursor:pointer; padding:0; text-decoration:underline; }
+  .diff-up{ color:var(--teal); } .diff-down{ color:var(--amber); }
+  .empty-state{ padding:60px 20px; text-align:center; color:#8a93a0; font-size:14px; }
+
+  /* ---- ラウンドタブ ---- */
+  .round-section{ margin-top:18px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:22px; }
+  .round-section h2{ margin:0 0 6px; font-size:16px; }
+  .round-section .sub{ font-size:13px; color:#6b7280; margin-bottom:16px; }
+  .choice-inputs{ display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:16px; }
+  .choice-inputs input{ padding:9px; border-radius:8px; border:1px solid var(--line); font-size:14px; text-align:center; }
+  .round-stats{ display:flex; gap:24px; margin-bottom:16px; flex-wrap:wrap; }
+  .round-stats .item .num{ font-size:20px; font-weight:700; }
+  .round-stats .item .label{ font-size:12px; color:#6b7280; }
+  .result-form{ display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-top:6px; }
+  .result-form label{ font-size:12px; color:#6b7280; display:block; margin-bottom:4px; }
+  .result-form select{ padding:9px; border-radius:8px; border:1px solid var(--line); font-size:14px; min-width:140px; }
+  .odds-tables{ display:flex; gap:24px; flex-wrap:wrap; margin-top:10px; }
+  .odds-tables table{ min-width:220px; }
+  .win-tag{ color:var(--teal); font-weight:600; }
+  .lose-tag{ color:#9aa0ab; }
+  .round-history-item{ padding:12px 0; border-bottom:1px solid var(--line); font-size:13px; }
+  .round-history-item:last-child{ border-bottom:none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>受付・スコア管理ダッシュボード</h1>
+    <div class="status-line">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">接続待ち…</span>
+      <span id="roundPill"></span>
+    </div>
+    <div class="admin-name-row">
+      <label for="adminName">操作者名</label>
+      <input type="text" id="adminName" placeholder="例：運営 田中">
+    </div>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="num" id="participantCount">0</div><div class="label">登録ID数</div></div>
+    <div class="stat"><div class="num" id="totalScans">0</div><div class="label">総スキャン件数</div></div>
+  </div>
+</header>
+
+<nav class="tabs">
+  <button class="tab-btn active" data-view="round">ラウンド</button>
+  <button class="tab-btn" data-view="participants">参加者・スコア</button>
+  <button class="tab-btn" data-view="checkins">スキャン履歴</button>
+  <button class="tab-btn" data-view="adjustments">スコア変更履歴</button>
+</nav>
+
+<div class="toolbar" id="toolbar">
+  <input type="text" id="filterInput" placeholder="IDで絞り込み">
+  <div class="spacer"></div>
+  <button class="btn" id="exportBtn">この一覧をCSVで書き出し</button>
+  <button class="btn danger" id="resetBtn">全データ初期化（テスト用）</button>
+</div>
+
+<main>
+  <!-- ラウンド管理 -->
+  <div class="view active" id="view-round">
+
+    <!-- 状態A: ラウンド未開始 -->
+    <div class="round-section" id="roundStartSection">
+      <h2>新しいラウンドを開始</h2>
+      <div class="sub">5つの選択肢を入力してください（空欄の場合は 1〜5 の番号になります）</div>
+      <div class="choice-inputs" id="choiceInputs"></div>
+      <button class="btn primary" id="startRoundBtn">ラウンドを開始する</button>
+      <div class="bet-error" id="startRoundError" style="color:var(--amber); font-size:13px; margin-top:8px;"></div>
+    </div>
+
+    <!-- 状態B: 受付中 -->
+    <div class="round-section" id="roundOpenSection" style="display:none;">
+      <h2 id="openRoundTitle">ラウンド 受付中</h2>
+      <div class="sub">参加者は読み取り端末でIDをスキャンし、その場で賭け金と予想を入力します。</div>
+      <div class="round-stats">
+        <div class="item"><div class="num" id="openBetCount">0</div><div class="label">投票件数</div></div>
+        <div class="item"><div class="num" id="openSinglePool">0</div><div class="label">単勝 賭け金合計</div></div>
+        <div class="item"><div class="num" id="openTrifectaPool">0</div><div class="label">3連単 賭け金合計</div></div>
+      </div>
+      <table>
+        <thead><tr><th>ID</th><th>方式</th><th>予想</th><th>賭け金</th><th>時刻</th></tr></thead>
+        <tbody id="openBetsBody"></tbody>
+      </table>
+      <button class="btn danger" id="closeRoundBtn" style="margin-top:14px;">受付終了してレートを確定する</button>
+    </div>
+
+    <!-- 状態C: 受付終了・結果待ち -->
+    <div class="round-section" id="roundClosedSection" style="display:none;">
+      <h2 id="closedRoundTitle">ラウンド 受付終了・結果入力待ち</h2>
+      <div class="sub">確定したレート（オッズ）は以下の通りです。実際の結果を選んで精算してください。</div>
+      <div class="odds-tables" id="oddsTables"></div>
+      <div class="result-form">
+        <div><label>1着</label><select id="resultFirst"></select></div>
+        <div><label>2着</label><select id="resultSecond"></select></div>
+        <div><label>3着</label><select id="resultThird"></select></div>
+        <button class="btn primary" id="settleRoundBtn">結果を確定して精算する</button>
+      </div>
+      <div class="bet-error" id="settleRoundError" style="color:var(--amber); font-size:13px; margin-top:8px;"></div>
+    </div>
+
+    <!-- 直近の精算結果 -->
+    <div class="round-section" id="roundSettledSection" style="display:none;">
+      <h2>直近のラウンド結果</h2>
+      <div class="sub" id="settledSummary"></div>
+      <table>
+        <thead><tr><th>ID</th><th>方式</th><th>予想</th><th>賭け金</th><th>結果</th><th>配当</th></tr></thead>
+        <tbody id="settledBetsBody"></tbody>
+      </table>
+    </div>
+
+    <!-- 過去のラウンド履歴 -->
+    <div class="round-section" id="roundHistorySection">
+      <h2>ラウンド履歴</h2>
+      <div id="roundHistoryList" class="sub">まだラウンドがありません。</div>
+    </div>
+  </div>
+
+  <!-- 参加者・スコア一覧 -->
+  <div class="view" id="view-participants">
+    <table>
+      <thead><tr><th style="width:160px;">ID</th><th style="width:160px;">現在スコア</th><th style="width:100px;">スキャン回数</th><th style="width:180px;">初回</th><th style="width:180px;">最終</th></tr></thead>
+      <tbody id="participantsBody"></tbody>
+    </table>
+    <div class="empty-state" id="participantsEmpty">まだ登録されたIDがありません。</div>
+  </div>
+
+  <!-- スキャン履歴 -->
+  <div class="view" id="view-checkins">
+    <table>
+      <thead><tr><th style="width:60px;">#</th><th style="width:170px;">日時</th><th style="width:140px;">端末</th><th>ID</th></tr></thead>
+      <tbody id="checkinsBody"></tbody>
+    </table>
+    <div class="empty-state" id="checkinsEmpty">まだスキャン履歴がありません。</div>
+  </div>
+
+  <!-- スコア変更履歴 -->
+  <div class="view" id="view-adjustments">
+    <table>
+      <thead><tr><th style="width:60px;">#</th><th style="width:170px;">日時</th><th style="width:140px;">ID</th><th style="width:200px;">変更</th><th>操作者</th></tr></thead>
+      <tbody id="adjustmentsBody"></tbody>
+    </table>
+    <div class="empty-state" id="adjustmentsEmpty">まだスコア変更はありません。</div>
+  </div>
+</main>
+
+<script>
+  const socket = io();
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const roundPill = document.getElementById('roundPill');
+  const adminNameInput = document.getElementById('adminName');
+  const filterInput = document.getElementById('filterInput');
+  const toolbar = document.getElementById('toolbar');
+  const resetBtn = document.getElementById('resetBtn');
+  const exportBtn = document.getElementById('exportBtn');
+  const participantCount = document.getElementById('participantCount');
+  const totalScans = document.getElementById('totalScans');
+
+  const savedAdminName = localStorage.getItem('qr-admin-name');
+  if (savedAdminName) adminNameInput.value = savedAdminName;
+  adminNameInput.addEventListener('change', () => localStorage.setItem('qr-admin-name', adminNameInput.value));
+
+  socket.on('connect', () => { statusDot.classList.add('connected'); statusText.textContent = 'サーバーに接続中'; });
+  socket.on('disconnect', () => { statusDot.classList.remove('connected'); statusText.textContent = '切断されました'; });
+
+  // ---------- タブ切り替え ----------
+  let currentView = 'round';
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      currentView = btn.dataset.view;
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === `view-${currentView}`));
+      toolbar.classList.toggle('hidden', currentView === 'round');
+      renderAll();
+    });
+  });
+
+  // ---------- 状態 ----------
+  let participants = {};
+  let checkins = [];
+  let adjustments = [];
+  let rounds = [];
+
+  function getCurrentRound() {
+    if (!rounds.length) return null;
+    const r = rounds[rounds.length - 1];
+    return r.status === 'settled' ? null : r;
+  }
+  function getLastSettledRound() {
+    for (let i = rounds.length - 1; i >= 0; i--) {
+      if (rounds[i].status === 'settled') return rounds[i];
+    }
+    return null;
+  }
+
+  socket.on('full-state', (state) => {
+    participants = {}; state.participants.forEach(p => participants[p.id] = p);
+    checkins = state.checkins;
+    adjustments = state.adjustments;
+    rounds = state.rounds;
+    renderAll();
+  });
+
+  socket.on('new-checkin', ({ checkin, participant }) => {
+    participants[participant.id] = participant;
+    checkins.push(checkin);
+    renderAll(checkin.seq, null);
+  });
+  socket.on('score-updated', ({ participant, adjustment }) => {
+    participants[participant.id] = participant;
+    adjustments.push(adjustment);
+    renderAll(null, adjustment.seq);
+  });
+  socket.on('state-cleared', () => {
+    participants = {}; checkins = []; adjustments = []; rounds = [];
+    renderAll();
+  });
+
+  // ---------- ラウンド系イベント ----------
+  function upsertRound(round) {
+    const i = rounds.findIndex(r => r.id === round.id);
+    if (i === -1) rounds.push(round); else rounds[i] = round;
+  }
+  socket.on('round-started', ({ round }) => { upsertRound(round); renderAll(); });
+  socket.on('round-updated', ({ round }) => { upsertRound(round); renderAll(); });
+  socket.on('round-closed', ({ round }) => { upsertRound(round); renderAll(); });
+  socket.on('round-settled', ({ round }) => { upsertRound(round); renderAll(); });
+  socket.on('round-error', (err) => {
+    document.getElementById('startRoundError').textContent = err.message;
+    document.getElementById('settleRoundError').textContent = err.message;
+  });
+
+  // ---------- 描画 ----------
+  function renderAll(highlightCheckinSeq, highlightAdjSeq) {
+    renderRoundPill();
+    if (currentView === 'round') renderRoundTab();
+    if (currentView === 'participants') renderParticipants();
+    if (currentView === 'checkins') renderCheckins(highlightCheckinSeq);
+    if (currentView === 'adjustments') renderAdjustments(highlightAdjSeq);
+    participantCount.textContent = Object.keys(participants).length;
+    totalScans.textContent = checkins.length;
+  }
+
+  function renderRoundPill() {
+    const round = getCurrentRound();
+    if (!round) { roundPill.textContent = ''; roundPill.className = 'round-pill'; return; }
+    roundPill.className = 'round-pill ' + round.status;
+    roundPill.textContent = round.status === 'open' ? `ラウンド${round.id} 受付中` : `ラウンド${round.id} 受付終了`;
+  }
+
+  function renderParticipants() {
+    const filter = filterInput.value.trim().toLowerCase();
+    const pList = Object.values(participants)
+      .filter(p => !filter || p.id.toLowerCase().includes(filter))
+      .sort((a, b) => new Date(b.lastSeen) - new Date(a.lastSeen));
+    const pBody = document.getElementById('participantsBody');
+    document.getElementById('participantsEmpty').style.display = pList.length ? 'none' : 'block';
+    pBody.innerHTML = pList.map(p => `
+      <tr>
+        <td class="id-mono">${escapeHtml(p.id)}</td>
+        <td><div class="score-cell"><span class="score-value">${p.score}</span><button class="edit-link" onclick="editScore('${escapeAttr(p.id)}')">編集</button></div></td>
+        <td>${p.checkinCount}</td>
+        <td>${p.firstSeenDisplay}</td>
+        <td>${p.lastSeenDisplay}</td>
+      </tr>
+    `).join('');
+  }
+
+  function renderCheckins(highlightSeq) {
+    const filter = filterInput.value.trim().toLowerCase();
+    const cList = checkins.filter(c => !filter || c.participantId.toLowerCase().includes(filter) || c.deviceName.toLowerCase().includes(filter)).slice().reverse();
+    const cBody = document.getElementById('checkinsBody');
+    document.getElementById('checkinsEmpty').style.display = cList.length ? 'none' : 'block';
+    cBody.innerHTML = cList.map(c => `
+      <tr class="${c.seq === highlightSeq ? 'new-row' : ''}">
+        <td>${c.seq}</td><td>${c.display}</td>
+        <td><span class="device-tag">${escapeHtml(c.deviceName)}</span></td>
+        <td class="id-mono">${escapeHtml(c.participantId)}</td>
+      </tr>`).join('');
+  }
+
+  function renderAdjustments(highlightSeq) {
+    const filter = filterInput.value.trim().toLowerCase();
+    const aList = adjustments.filter(a => !filter || a.participantId.toLowerCase().includes(filter)).slice().reverse();
+    const aBody = document.getElementById('adjustmentsBody');
+    document.getElementById('adjustmentsEmpty').style.display = aList.length ? 'none' : 'block';
+    aBody.innerHTML = aList.map(a => {
+      const diff = a.newScore - a.oldScore;
+      const diffClass = diff > 0 ? 'diff-up' : diff < 0 ? 'diff-down' : '';
+      const diffText = diff > 0 ? `+${diff}` : `${diff}`;
+      return `<tr class="${a.seq === highlightSeq ? 'new-row' : ''}">
+        <td>${a.seq}</td><td>${a.display}</td><td class="id-mono">${escapeHtml(a.participantId)}</td>
+        <td>${a.oldScore} → ${a.newScore} <span class="${diffClass}">(${diffText})</span></td>
+        <td>${escapeHtml(a.adjustedBy)}</td></tr>`;
+    }).join('');
+  }
+
+  // ---------- ラウンドタブ ----------
+  const choiceInputs = document.getElementById('choiceInputs');
+  choiceInputs.innerHTML = [0,1,2,3,4].map(i => `<input type="text" placeholder="選択肢${i+1}（例：${i+1}）" id="choiceInput${i}">`).join('');
+  document.getElementById('startRoundBtn').addEventListener('click', () => {
+    const choices = [0,1,2,3,4].map(i => document.getElementById(`choiceInput${i}`).value.trim());
+    document.getElementById('startRoundError').textContent = '';
+    socket.emit('start-round', { choices });
+  });
+
+  document.getElementById('closeRoundBtn').addEventListener('click', () => {
+    if (confirm('受付を終了し、レートを確定します。以降は新しい投票を受け付けられません。よろしいですか？')) {
+      socket.emit('close-round');
+    }
+  });
+
+  document.getElementById('settleRoundBtn').addEventListener('click', () => {
+    const first = Number(document.getElementById('resultFirst').value);
+    const second = Number(document.getElementById('resultSecond').value);
+    const third = Number(document.getElementById('resultThird').value);
+    document.getElementById('settleRoundError').textContent = '';
+    if (new Set([first, second, third]).size !== 3) {
+      document.getElementById('settleRoundError').textContent = '1〜3着は異なる選択肢を選んでください。';
+      return;
+    }
+    if (!confirm('この結果でスコアを自動精算します。よろしいですか？')) return;
+    socket.emit('settle-round', { result: { first, second, third } });
+  });
+
+  function renderRoundTab() {
+    const round = getCurrentRound();
+    const startSection = document.getElementById('roundStartSection');
+    const openSection = document.getElementById('roundOpenSection');
+    const closedSection = document.getElementById('roundClosedSection');
+    const settledSection = document.getElementById('roundSettledSection');
+
+    startSection.style.display = round ? 'none' : 'block';
+    openSection.style.display = round && round.status === 'open' ? 'block' : 'none';
+    closedSection.style.display = round && round.status === 'closed' ? 'block' : 'none';
+
+    if (round && round.status === 'open') renderOpenRound(round);
+    if (round && round.status === 'closed') renderClosedRound(round);
+
+    const lastSettled = getLastSettledRound();
+    if (!round && lastSettled) {
+      settledSection.style.display = 'block';
+      renderSettledRound(lastSettled);
+    } else {
+      settledSection.style.display = 'none';
+    }
+
+    renderRoundHistory();
+  }
+
+  function renderOpenRound(round) {
+    document.getElementById('openRoundTitle').textContent = `ラウンド${round.id} 受付中（選択肢: ${round.choices.join(' / ')}）`;
+    const bets = Object.values(round.bets);
+    document.getElementById('openBetCount').textContent = bets.length;
+    document.getElementById('openSinglePool').textContent = bets.filter(b => b.type === 'single').reduce((s, b) => s + b.stake, 0);
+    document.getElementById('openTrifectaPool').textContent = bets.filter(b => b.type === 'trifecta').reduce((s, b) => s + b.stake, 0);
+    document.getElementById('openBetsBody').innerHTML = bets.slice().reverse().map(b => `
+      <tr>
+        <td class="id-mono">${escapeHtml(b.participantId)}</td>
+        <td>${b.type === 'single' ? '単勝' : '3連単'}</td>
+        <td>${betSelectionText(round, b)}</td>
+        <td>${b.stake}</td>
+        <td>${b.placedDisplay}</td>
+      </tr>`).join('');
+  }
+
+  function betSelectionText(round, bet) {
+    return bet.type === 'single' ? round.choices[bet.selection] : bet.selection.map(i => round.choices[i]).join(' → ');
+  }
+
+  function renderClosedRound(round) {
+    document.getElementById('closedRoundTitle').textContent = `ラウンド${round.id} 受付終了（選択肢: ${round.choices.join(' / ')}）`;
+
+    // オッズ表
+    const singleRows = round.choices.map((label, idx) => {
+      const rate = round.rates.single[idx];
+      return `<tr><td>${escapeHtml(label)}</td><td>${rate ? rate + '倍' : '賭けなし'}</td></tr>`;
+    }).join('');
+    const trifectaKeys = Object.keys(round.rates.trifecta);
+    const trifectaRows = trifectaKeys.length
+      ? trifectaKeys.map(key => {
+          const names = key.split('-').map(i => round.choices[Number(i)]).join(' → ');
+          return `<tr><td>${escapeHtml(names)}</td><td>${round.rates.trifecta[key]}倍</td></tr>`;
+        }).join('')
+      : '<tr><td colspan="2">賭けなし</td></tr>';
+
+    document.getElementById('oddsTables').innerHTML = `
+      <table><thead><tr><th>単勝</th><th>レート</th></tr></thead><tbody>${singleRows}</tbody></table>
+      <table><thead><tr><th>3連単（1着→2着→3着）</th><th>レート</th></tr></thead><tbody>${trifectaRows}</tbody></table>
+    `;
+
+    // 結果選択セレクト
+    ['resultFirst', 'resultSecond', 'resultThird'].forEach(id => {
+      const sel = document.getElementById(id);
+      sel.innerHTML = round.choices.map((label, idx) => `<option value="${idx}">${escapeHtml(label)}</option>`).join('');
+    });
+    document.getElementById('resultSecond').selectedIndex = Math.min(1, round.choices.length - 1);
+    document.getElementById('resultThird').selectedIndex = Math.min(2, round.choices.length - 1);
+  }
+
+  function renderSettledRound(round) {
+    const r = round.result;
+    document.getElementById('settledSummary').textContent =
+      `ラウンド${round.id}：結果 1着「${round.choices[r.first]}」 2着「${round.choices[r.second]}」 3着「${round.choices[r.third]}」（${round.settledDisplay}精算）`;
+    const bets = Object.values(round.bets).slice().sort((a, b) => (b.payout || 0) - (a.payout || 0));
+    document.getElementById('settledBetsBody').innerHTML = bets.map(b => `
+      <tr>
+        <td class="id-mono">${escapeHtml(b.participantId)}</td>
+        <td>${b.type === 'single' ? '単勝' : '3連単'}</td>
+        <td>${betSelectionText(round, b)}</td>
+        <td>${b.stake}</td>
+        <td>${b.won ? '<span class="win-tag">的中</span>' : '<span class="lose-tag">はずれ</span>'}</td>
+        <td>${b.won ? '+' + b.payout : '-'}</td>
+      </tr>`).join('');
+  }
+
+  function renderRoundHistory() {
+    const settledRounds = rounds.filter(r => r.status === 'settled').slice().reverse();
+    const el = document.getElementById('roundHistoryList');
+    if (!settledRounds.length) { el.textContent = 'まだ精算済みのラウンドがありません。'; return; }
+    el.innerHTML = settledRounds.map(r => `
+      <div class="round-history-item">
+        ラウンド${r.id}：選択肢 ${r.choices.join(' / ')}｜結果 1着「${r.choices[r.result.first]}」2着「${r.choices[r.result.second]}」3着「${r.choices[r.result.third]}」｜
+        投票 ${Object.keys(r.bets).length}件｜単勝プール ${r.pools.single}｜3連単プール ${r.pools.trifecta}｜${r.settledDisplay}精算
+      </div>`).join('');
+  }
+
+  // ---------- スコア編集・CSV・リセット ----------
+  function editScore(id) {
+    const p = participants[id];
+    if (!p) return;
+    const input = prompt(`ID: ${id}\n現在のスコア: ${p.score}\n\n新しいスコアを入力してください`, p.score);
+    if (input === null) return;
+    const newScore = Number(input);
+    if (!Number.isFinite(newScore)) { alert('数値を入力してください。'); return; }
+    const adjustedBy = adminNameInput.value.trim() || '不明な操作者';
+    socket.emit('update-score', { participantId: id, newScore, adjustedBy });
+  }
+  window.editScore = editScore;
+
+  filterInput.addEventListener('input', () => renderAll());
+
+  resetBtn.addEventListener('click', () => {
+    if (confirm('参加者・スコア・全履歴・ラウンドを完全に削除します。本番運用中は使用しないでください。よろしいですか？')) {
+      if (confirm('本当によろしいですか？この操作は取り消せません。')) socket.emit('reset-all');
+    }
+  });
+
+  exportBtn.addEventListener('click', () => {
+    let rows, filename;
+    if (currentView === 'participants') {
+      rows = [['ID', 'スコア', 'スキャン回数', '初回', '最終'], ...Object.values(participants).map(p => [p.id, p.score, p.checkinCount, p.firstSeenDisplay, p.lastSeenDisplay])];
+      filename = `participants-${today()}.csv`;
+    } else if (currentView === 'checkins') {
+      rows = [['#', '日時', '端末', 'ID'], ...checkins.map(c => [c.seq, c.display, c.deviceName, c.participantId])];
+      filename = `checkins-${today()}.csv`;
+    } else {
+      rows = [['#', '日時', 'ID', '変更前', '変更後', '操作者'], ...adjustments.map(a => [a.seq, a.display, a.participantId, a.oldScore, a.newScore, a.adjustedBy])];
+      filename = `score-adjustments-${today()}.csv`;
+    }
+    downloadCsv(rows, filename);
+  });
+
+  function today() { return new Date().toISOString().slice(0, 10); }
+  function downloadCsv(rows, filename) {
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+  function escapeHtml(str) { return String(str).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+  function escapeAttr(str) { return String(str).replace(/'/g, "\\'"); }
+
+  // 初期表示（roundタブがデフォルトなのでツールバーは隠す）
+  toolbar.classList.add('hidden');
+</script>
+</body>
+</html>

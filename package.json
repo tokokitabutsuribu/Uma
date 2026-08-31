@@ -1,0 +1,13 @@
+{
+  "name": "qr-checkin-system",
+  "version": "1.0.0",
+  "description": "複数端末でQRコードを読み取り、管理デバイスに集約する受付・入場チェックシステム",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>QR受付端末</title>
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  :root{
+    --ink:#151a23;
+    --paper:#f6f5f2;
+    --teal:#0f6e64;
+    --teal-deep:#0a4c45;
+    --amber:#b5622a;
+    --amber-deep:#7a3f18;
+    --panel:#1e2431;
+    --line:#2a3140;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;
+    background:var(--ink);
+    color:var(--paper);
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+  }
+  header{ padding:16px 20px 10px; border-bottom:1px solid var(--line); }
+  header h1{ margin:0 0 4px; font-size:19px; font-weight:600; }
+  .device-row{ display:flex; gap:8px; align-items:center; }
+  .device-row input{
+    flex:1; padding:9px 12px; border-radius:8px; border:1px solid #3a4355;
+    background:var(--panel); color:var(--paper); font-size:14px;
+  }
+  .status-dot{ width:9px;height:9px;border-radius:50%; background:#5b6577; flex-shrink:0; }
+  .status-dot.connected{ background:var(--teal); }
+  .round-banner{
+    margin-top:8px; font-size:12px; padding:5px 10px; border-radius:7px;
+    background:#26314a; color:#9fb3d4; display:inline-block;
+  }
+  .round-banner.closed{ background:#3a2c1a; color:#e0b686; }
+
+  main{ flex:1; display:flex; flex-direction:column; padding:14px; gap:12px; }
+  #reader{ width:100%; border-radius:14px; overflow:hidden; border:1px solid var(--line); background:#000; }
+  #reader video{ width:100% !important; }
+
+  .result-panel{
+    border-radius:14px; padding:18px; min-height:96px; display:flex; flex-direction:column;
+    justify-content:center; gap:8px; background:var(--panel); border:1px solid var(--line);
+    transition:background 0.25s ease, border-color 0.25s ease;
+  }
+  .result-panel.success{ background:var(--teal-deep); border-color:var(--teal); }
+  .result-panel.new-participant{ background:var(--amber-deep); border-color:var(--amber); }
+  .result-label{ font-size:12px; color:#9aa3b5; }
+  .result-panel.success .result-label, .result-panel.new-participant .result-label{ color:#e7ede9; }
+  .result-id{ font-size:19px; font-weight:700; word-break:break-all; }
+  .result-meta{ display:flex; gap:16px; font-size:13px; flex-wrap:wrap; }
+  .result-meta b{ font-size:17px; }
+  .badge{ display:inline-block; align-self:flex-start; font-size:12px; padding:2px 9px; border-radius:6px; background:rgba(255,255,255,0.15); }
+
+  .hint{ font-size:12px; color:#8a93a6; line-height:1.6; padding:0 4px; }
+  .count-badge{ font-size:12px; color:#9aa3b5; }
+
+  /* ---- ベット入力パネル ---- */
+  .bet-overlay{
+    position:fixed; inset:0; background:rgba(10,13,20,0.92); z-index:50;
+    display:flex; flex-direction:column; padding:18px; overflow-y:auto;
+  }
+  .bet-overlay.hidden{ display:none; }
+  .bet-card{ background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px; display:flex; flex-direction:column; gap:16px; }
+  .bet-title{ font-size:16px; font-weight:700; }
+  .bet-sub{ font-size:13px; color:#9aa3b5; }
+  .score-line{ font-size:14px; }
+  .score-line b{ font-size:20px; color:var(--teal); }
+
+  .stake-quick{ display:flex; gap:8px; flex-wrap:wrap; }
+  .stake-quick button{
+    flex:1; min-width:64px; padding:9px 0; border-radius:8px; border:1px solid #3a4355;
+    background:#151a23; color:var(--paper); font-size:13px; cursor:pointer;
+  }
+  .stake-quick button.active{ background:var(--teal); border-color:var(--teal); }
+  input[type=number]{
+    width:100%; padding:12px; border-radius:9px; border:1px solid #3a4355;
+    background:#151a23; color:var(--paper); font-size:18px; text-align:center;
+  }
+
+  .type-toggle{ display:flex; gap:8px; }
+  .type-toggle button{
+    flex:1; padding:10px 0; border-radius:9px; border:1px solid #3a4355;
+    background:#151a23; color:var(--paper); font-size:14px; cursor:pointer;
+  }
+  .type-toggle button.active{ background:var(--amber-deep); border-color:var(--amber); }
+
+  .choice-grid{ display:grid; grid-template-columns:repeat(5,1fr); gap:8px; }
+  .choice-btn{
+    padding:14px 0; border-radius:9px; border:1px solid #3a4355; background:#151a23;
+    color:var(--paper); font-size:15px; font-weight:600; cursor:pointer; text-align:center;
+  }
+  .choice-btn.picked{ background:var(--teal); border-color:var(--teal); }
+  .choice-btn.picked-2{ background:#2c6b9e; border-color:#2c6b9e; }
+  .choice-btn.picked-3{ background:#6e4fa3; border-color:#6e4fa3; }
+  .choice-btn:disabled{ opacity:0.35; }
+
+  .trifecta-order{ font-size:13px; color:#c7cede; display:flex; gap:10px; flex-wrap:wrap; }
+  .trifecta-order span{ padding:3px 9px; border-radius:6px; background:#151a23; }
+
+  .bet-actions{ display:flex; gap:10px; }
+  .bet-actions button{
+    flex:1; padding:13px 0; border-radius:9px; border:none; font-size:15px; font-weight:600; cursor:pointer;
+  }
+  .btn-submit{ background:var(--teal); color:#fff; }
+  .btn-submit:disabled{ background:#3a4355; color:#8a93a6; }
+  .btn-cancel{ background:#2a3140; color:var(--paper); }
+
+  .bet-error{ font-size:13px; color:#f0a26a; min-height:16px; }
+  .bet-done{
+    display:flex; flex-direction:column; gap:10px; align-items:center; text-align:center; padding:10px 0;
+  }
+  .bet-done .big{ font-size:17px; font-weight:700; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>QR受付端末</h1>
+  <div class="device-row">
+    <span class="status-dot" id="statusDot"></span>
+    <input type="text" id="deviceName" placeholder="この端末の名前（例：受付A）">
+  </div>
+  <div id="roundBanner"></div>
+</header>
+
+<main>
+  <div id="reader"></div>
+
+  <div class="result-panel" id="resultPanel">
+    <div class="result-label">最後に読み取った内容</div>
+    <div class="result-id" id="resultId">まだ読み取っていません</div>
+    <div class="result-meta" id="resultMeta"></div>
+  </div>
+
+  <div class="count-badge" id="countBadge">この端末での読み取り回数：0</div>
+
+  <p class="hint">参加者のQRコード（ID）をカメラに映すと自動で読み取られます。ラウンド受付中は、続けてこの画面で賭け金と予想を入力してもらってください。</p>
+</main>
+
+<!-- ベット入力オーバーレイ -->
+<div class="bet-overlay hidden" id="betOverlay">
+  <div class="bet-card">
+    <div>
+      <div class="bet-title" id="betTitle">ラウンド参加</div>
+      <div class="bet-sub" id="betSub"></div>
+    </div>
+    <div class="score-line">現在スコア：<b id="betScore">0</b></div>
+
+    <div>
+      <div class="bet-sub" style="margin-bottom:6px;">賭け方</div>
+      <div class="type-toggle">
+        <button id="typeSingleBtn" class="active">単勝（1つ選択）</button>
+        <button id="typeTrifectaBtn">3連単（順列3つ）</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="bet-sub" style="margin-bottom:6px;" id="choiceLabel">選択肢を1つ選んでください</div>
+      <div class="choice-grid" id="choiceGrid"></div>
+      <div class="trifecta-order" id="trifectaOrder" style="margin-top:8px;"></div>
+    </div>
+
+    <div>
+      <div class="bet-sub" style="margin-bottom:6px;">賭け金</div>
+      <div class="stake-quick" id="stakeQuick"></div>
+      <input type="number" id="stakeInput" min="1" step="1" placeholder="賭け金を入力" style="margin-top:8px;">
+    </div>
+
+    <div class="bet-error" id="betError"></div>
+
+    <div class="bet-actions">
+      <button class="btn-cancel" id="betCancelBtn">やめる</button>
+      <button class="btn-submit" id="betSubmitBtn" disabled>この内容で確定する</button>
+    </div>
+
+    <div class="bet-done hidden" id="betDone">
+      <div class="big" id="betDoneText"></div>
+      <button class="btn-cancel" id="betDoneCloseBtn">閉じる</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const socket = io();
+  const statusDot = document.getElementById('statusDot');
+  const resultPanel = document.getElementById('resultPanel');
+  const resultId = document.getElementById('resultId');
+  const resultMeta = document.getElementById('resultMeta');
+  const deviceNameInput = document.getElementById('deviceName');
+  const countBadge = document.getElementById('countBadge');
+  const roundBanner = document.getElementById('roundBanner');
+
+  const savedName = localStorage.getItem('qr-device-name');
+  if (savedName) deviceNameInput.value = savedName;
+  deviceNameInput.addEventListener('change', () => localStorage.setItem('qr-device-name', deviceNameInput.value));
+
+  socket.on('connect', () => statusDot.classList.add('connected'));
+  socket.on('disconnect', () => statusDot.classList.remove('connected'));
+
+  let scanCount = 0;
+  let lastText = null, lastTime = 0;
+  let currentRound = null;
+
+  function renderRoundBanner() {
+    if (!currentRound) { roundBanner.innerHTML = ''; return; }
+    if (currentRound.status === 'open') {
+      roundBanner.innerHTML = `<span class="round-banner">ラウンド${currentRound.id} 受付中</span>`;
+    } else if (currentRound.status === 'closed') {
+      roundBanner.innerHTML = `<span class="round-banner closed">ラウンド${currentRound.id} 受付終了・結果待ち</span>`;
+    } else {
+      roundBanner.innerHTML = '';
+    }
+  }
+
+  socket.on('full-state', (state) => {
+    const active = state.rounds.length ? state.rounds[state.rounds.length - 1] : null;
+    currentRound = active && active.status !== 'settled' ? active : null;
+    renderRoundBanner();
+  });
+  socket.on('round-started', ({ round }) => { currentRound = round; renderRoundBanner(); });
+  socket.on('round-closed', ({ round }) => { currentRound = round; renderRoundBanner(); });
+  socket.on('round-settled', () => { currentRound = null; renderRoundBanner(); });
+  socket.on('round-updated', ({ round }) => { currentRound = round; renderRoundBanner(); });
+
+  function onScanSuccess(decodedText) {
+    const now = Date.now();
+    if (decodedText === lastText && now - lastTime < 2000) return;
+    lastText = decodedText; lastTime = now;
+    const deviceName = deviceNameInput.value.trim() || '名前未設定の端末';
+    socket.emit('qr-scanned', { deviceName, qrText: decodedText });
+    scanCount += 1;
+    countBadge.textContent = `この端末での読み取り回数：${scanCount}`;
+  }
+
+  socket.on('scan-ack', (ack) => {
+    resultId.textContent = `ID: ${ack.participantId}`;
+    resultMeta.innerHTML = `<span>スコア <b>${ack.score}</b></span><span>累計 <b>${ack.checkinCount}</b> 回目</span>`;
+    resultPanel.classList.remove('success', 'new-participant');
+    if (ack.isNew) {
+      resultPanel.classList.add('new-participant');
+      resultMeta.innerHTML = `<span class="badge">新規登録・初期スコア1000</span>` + resultMeta.innerHTML;
+    } else {
+      resultPanel.classList.add('success');
+    }
+    setTimeout(() => resultPanel.classList.remove('success', 'new-participant'), 900);
+  });
+
+  // ---------- ベット入力 ----------
+  const betOverlay = document.getElementById('betOverlay');
+  const betTitle = document.getElementById('betTitle');
+  const betSub = document.getElementById('betSub');
+  const betScore = document.getElementById('betScore');
+  const typeSingleBtn = document.getElementById('typeSingleBtn');
+  const typeTrifectaBtn = document.getElementById('typeTrifectaBtn');
+  const choiceLabel = document.getElementById('choiceLabel');
+  const choiceGrid = document.getElementById('choiceGrid');
+  const trifectaOrder = document.getElementById('trifectaOrder');
+  const stakeQuick = document.getElementById('stakeQuick');
+  const stakeInput = document.getElementById('stakeInput');
+  const betError = document.getElementById('betError');
+  const betSubmitBtn = document.getElementById('betSubmitBtn');
+  const betCancelBtn = document.getElementById('betCancelBtn');
+  const betDone = document.getElementById('betDone');
+  const betDoneText = document.getElementById('betDoneText');
+  const betDoneCloseBtn = document.getElementById('betDoneCloseBtn');
+  const betCardBody = document.querySelectorAll('.bet-card > div:not(.bet-done)');
+
+  let betState = null; // { round, participant, type, single: idx|null, trifecta: [idx,...] }
+
+  function openBetOverlay(round, participant) {
+    betState = { round, participant, type: 'single', single: null, trifecta: [] };
+    betTitle.textContent = `ラウンド${round.id}：ID ${participant.id} さんの参加登録`;
+    betSub.textContent = '賭け方と予想を選んで、賭け金を入力してください。';
+    betScore.textContent = participant.score;
+    betError.textContent = '';
+    stakeInput.value = '';
+    betCardBody.forEach(el => el.classList.remove('hidden'));
+    betDone.classList.add('hidden');
+    renderChoiceType();
+    renderStakeQuick(participant.score);
+    betOverlay.classList.remove('hidden');
+  }
+
+  function closeBetOverlay() {
+    betOverlay.classList.add('hidden');
+    betState = null;
+  }
+
+  typeSingleBtn.addEventListener('click', () => { if (betState) { betState.type = 'single'; renderChoiceType(); } });
+  typeTrifectaBtn.addEventListener('click', () => { if (betState) { betState.type = 'trifecta'; renderChoiceType(); } });
+
+  function renderChoiceType() {
+    typeSingleBtn.classList.toggle('active', betState.type === 'single');
+    typeTrifectaBtn.classList.toggle('active', betState.type === 'trifecta');
+    choiceLabel.textContent = betState.type === 'single'
+      ? '選択肢を1つ選んでください'
+      : '1着・2着・3着の順にタップしてください（3つ選ぶと確定）';
+    betState.single = null;
+    betState.trifecta = [];
+    renderChoiceGrid();
+    updateSubmitState();
+  }
+
+  function renderChoiceGrid() {
+    const choices = betState.round.choices;
+    choiceGrid.innerHTML = choices.map((label, idx) => `<div class="choice-btn" data-idx="${idx}">${escapeHtml(label)}</div>`).join('');
+    choiceGrid.querySelectorAll('.choice-btn').forEach(btn => {
+      btn.addEventListener('click', () => onChoiceClick(Number(btn.dataset.idx)));
+    });
+    refreshChoiceHighlight();
+  }
+
+  function onChoiceClick(idx) {
+    if (betState.type === 'single') {
+      betState.single = idx;
+    } else {
+      const pos = betState.trifecta.indexOf(idx);
+      if (pos !== -1) {
+        betState.trifecta.splice(pos, 1); // 既に選択済みなら取り消し
+      } else if (betState.trifecta.length < 3) {
+        betState.trifecta.push(idx);
+      }
+    }
+    refreshChoiceHighlight();
+    updateSubmitState();
+  }
+
+  function refreshChoiceHighlight() {
+    const choices = betState.round.choices;
+    choiceGrid.querySelectorAll('.choice-btn').forEach(btn => {
+      const idx = Number(btn.dataset.idx);
+      btn.classList.remove('picked', 'picked-2', 'picked-3');
+      if (betState.type === 'single') {
+        if (betState.single === idx) btn.classList.add('picked');
+      } else {
+        const pos = betState.trifecta.indexOf(idx);
+        if (pos === 0) btn.classList.add('picked');
+        if (pos === 1) btn.classList.add('picked-2');
+        if (pos === 2) btn.classList.add('picked-3');
+      }
+    });
+    if (betState.type === 'trifecta') {
+      const names = betState.trifecta.map(i => choices[i]);
+      trifectaOrder.innerHTML = ['1着', '2着', '3着'].map((label, i) => `<span>${label}: ${names[i] ? escapeHtml(names[i]) : '未選択'}</span>`).join('');
+    } else {
+      trifectaOrder.innerHTML = '';
+    }
+  }
+
+  function renderStakeQuick(score) {
+    const options = [Math.round(score * 0.1), Math.round(score * 0.25), Math.round(score * 0.5), score]
+      .map(v => Math.max(1, v));
+    const labels = ['10%', '25%', '50%', '全額'];
+    stakeQuick.innerHTML = options.map((v, i) => `<button data-v="${v}">${labels[i]}<br>${v}</button>`).join('');
+    stakeQuick.querySelectorAll('button').forEach(btn => {
+      btn.addEventListener('click', () => {
+        stakeInput.value = btn.dataset.v;
+        stakeQuick.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        updateSubmitState();
+      });
+    });
+  }
+
+  stakeInput.addEventListener('input', () => {
+    stakeQuick.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+    updateSubmitState();
+  });
+
+  function updateSubmitState() {
+    if (!betState) return;
+    const stake = Number(stakeInput.value);
+    const stakeOk = Number.isInteger(stake) && stake > 0 && stake <= betState.participant.score;
+    const choiceOk = betState.type === 'single' ? betState.single !== null : betState.trifecta.length === 3;
+    betSubmitBtn.disabled = !(stakeOk && choiceOk);
+  }
+
+  betCancelBtn.addEventListener('click', closeBetOverlay);
+  betDoneCloseBtn.addEventListener('click', closeBetOverlay);
+
+  betSubmitBtn.addEventListener('click', () => {
+    if (!betState) return;
+    const stake = Number(stakeInput.value);
+    const payload = {
+      participantId: betState.participant.id,
+      type: betState.type,
+      selection: betState.type === 'single' ? betState.single : betState.trifecta,
+      stake,
+    };
+    betError.textContent = '';
+    socket.emit('place-bet', payload);
+  });
+
+  socket.on('bet-error', (err) => { betError.textContent = err.message; });
+
+  socket.on('bet-placed', ({ bet }) => {
+    betCardBody.forEach(el => el.classList.add('hidden'));
+    betDone.classList.remove('hidden');
+    const choiceText = bet.type === 'single'
+      ? betState.round.choices[bet.selection]
+      : bet.selection.map(i => betState.round.choices[i]).join(' → ');
+    betDoneText.textContent = `受付完了：${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake} 点を賭けました。結果発表をお待ちください。`;
+  });
+
+  socket.on('round-entry', ({ round, participant }) => {
+    openBetOverlay(round, participant);
+  });
+
+  socket.on('round-bet-exists', ({ round, bet }) => {
+    const choiceText = bet.type === 'single'
+      ? round.choices[bet.selection]
+      : bet.selection.map(i => round.choices[i]).join(' → ');
+    resultId.textContent = `ID: ${bet.participantId}（このラウンドは投票済み）`;
+    resultMeta.innerHTML = `<span>${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake} 点</span>`;
+  });
+
+  socket.on('round-closed-notice', () => {
+    resultMeta.innerHTML = `<span class="badge">このラウンドは受付終了しました</span>`;
+  });
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+
+  // ---------- カメラ起動 ----------
+  const html5QrCode = new Html5Qrcode("reader");
+  Html5Qrcode.getCameras().then(cameras => {
+    if (!cameras || cameras.length === 0) { resultId.textContent = 'カメラが見つかりません'; return; }
+    const backCam = cameras.find(c => /back|rear|environment/i.test(c.label)) || cameras[cameras.length - 1];
+    html5QrCode.start(backCam.id, { fps: 10, qrbox: { width: 240, height: 240 } }, onScanSuccess)
+      .catch(err => { resultId.textContent = 'カメラ起動に失敗しました: ' + err; });
+  }).catch(() => { resultId.textContent = 'カメラへのアクセスが許可されていません'; });
+</script>
+</body>
+</html>
