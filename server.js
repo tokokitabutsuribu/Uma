@@ -14,21 +14,44 @@
 //    （＝参加判定は精算完了と同時に消える）
 
 const express = require('express');
-const http = require('http');
+const https = require('https');
 const { Server } = require('socket.io');
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const selfsigned = require('selfsigned');
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
 const STORE_PATH = path.join(DATA_DIR, 'store.json');
+const CERT_PATH = path.join(DATA_DIR, 'cert.pem');
+const KEY_PATH = path.join(DATA_DIR, 'key.pem');
 const INITIAL_SCORE = 1000;
 const CHOICE_COUNT = 5;
+
+// ---------- HTTPS証明書（自己署名・自動生成） ----------
+// スマホのカメラ機能（getUserMedia）はHTTPS（安全な接続）でないと
+// 多くのブラウザで動作しないため、自己署名証明書を自動生成してHTTPS化する。
+// 一度生成した証明書はdataフォルダに保存し、再起動しても使い回す
+// （毎回証明書が変わると、各端末で警告の許可をやり直す必要が出てしまうため）。
+function getOrCreateCertificate() {
+  if (fs.existsSync(CERT_PATH) && fs.existsSync(KEY_PATH)) {
+    return { cert: fs.readFileSync(CERT_PATH, 'utf-8'), key: fs.readFileSync(KEY_PATH, 'utf-8') };
+  }
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+  const attrs = [{ name: 'commonName', value: 'qr-checkin.local' }];
+  const pems = selfsigned.generate(attrs, { days: 3650, keySize: 2048 });
+  fs.writeFileSync(CERT_PATH, pems.cert);
+  fs.writeFileSync(KEY_PATH, pems.private);
+  console.log('自己署名証明書を新規作成しました（data/cert.pem, data/key.pem）。');
+  return { cert: pems.cert, key: pems.private };
+}
+
+const { cert, key } = getOrCreateCertificate();
+const server = https.createServer({ cert, key }, app);
+const io = new Server(server);
 
 app.use(express.static('public'));
 // html5-qrcode を外部CDNに頼らず自己ホスト化（npm installでnode_modulesに入る）
@@ -391,12 +414,15 @@ server.listen(PORT, '0.0.0.0', () => {
     }
   }
   console.log('==========================================');
-  console.log(`サーバー起動: ポート ${PORT}`);
+  console.log(`サーバー起動: ポート ${PORT}（HTTPS）`);
   console.log(`データ保存先: ${STORE_PATH}`);
   console.log('同じWi-Fi内の他の端末から、以下のURLでアクセスしてください:');
   addresses.forEach((addr) => {
-    console.log(`  読み取り端末用: http://${addr}:${PORT}/scan.html`);
-    console.log(`  管理デバイス用: http://${addr}:${PORT}/admin.html`);
+    console.log(`  読み取り端末用: https://${addr}:${PORT}/scan.html`);
+    console.log(`  管理デバイス用: https://${addr}:${PORT}/admin.html`);
   });
+  console.log('※自己署名証明書のため、各端末で初回アクセス時に');
+  console.log('　「保護されていません」等の警告が出ます。詳細を開いて');
+  console.log('　「このまま進む／アクセスする」を選んでください（1端末につき1回のみ）。');
   console.log('==========================================');
 });
