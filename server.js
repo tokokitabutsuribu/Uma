@@ -2,13 +2,17 @@
 // 同一LAN内で動作する簡易サーバーです。
 //
 // 【全体の流れ】
-// 1. 運営が管理画面で「ラウンド開始」→ 5つの選択肢を持つラウンドが受付中になる
-// 2. 参加者が読み取り端末でIDをスキャン → 受付中のラウンドがあれば、その場で
+// 1. 選択肢と3連単レート倍率は「設定」として別途登録し、変更しない限り固定
+//    （ラウンドを開始するたびに聞き直すことはしない）
+// 2. 運営が管理画面で「ラウンド開始」→ 設定済みの5つの選択肢で受付中になる
+// 3. 参加者が読み取り端末でIDをスキャン → 受付中のラウンドがあれば、その場で
 //    賭け金（スコアの一部）と選択（単勝1つ or 3連単の順列3つ）を入力して送信
 //    → 送信と同時にスコアから賭け金が差し引かれる（＝参加登録）
-// 3. 運営が「受付終了」→ 単勝・3連単それぞれの倍率（レート）を自動計算
+//    → 同じIDでも1ラウンドにつき最大2回まで賭けられる
+// 4. 運営が「受付終了」→ 単勝・3連単それぞれの倍率（レート）を自動計算
 //    レート = そのラウンドの賭け金合計 ÷ その選択肢に賭けられた金額の合計
-// 4. 運営が実際の結果（1〜3着）を入力して「精算」→ 的中者にレートに応じた
+//    3連単は的中しにくいため、設定した倍率でレートをさらに割増しする
+// 5. 運営が実際の結果（1〜3着）を入力して「精算」→ 的中者にレートに応じた
 //    配当を自動で加算し、スコア変更履歴に記録。ラウンドは終了（settled）となり、
 //    次のラウンドが始まるとその参加記録は完全に過去のものになる
 //    （＝参加判定は精算完了と同時に消える）
@@ -30,6 +34,9 @@ const CERT_PATH = path.join(DATA_DIR, 'cert.pem');
 const KEY_PATH = path.join(DATA_DIR, 'key.pem');
 const INITIAL_SCORE = 1000;
 const CHOICE_COUNT = 5;
+const DEFAULT_CHOICES = ['1', '2', '3', '4', '5'];
+const MAX_BETS_PER_PARTICIPANT = 2; // 1ラウンドにつき同じIDが賭けられる回数の上限
+const TRIFECTA_RATE_MULTIPLIER = 1.5; // 3連単は単勝より的中しにくいため、按分レートをこの倍率でさらに割増しする
 
 // ---------- HTTPS証明書（自己署名・自動生成） ----------
 // スマホのカメラ機能（getUserMedia）はHTTPS（安全な接続）でないと
@@ -75,10 +82,12 @@ function loadStore() {
     nextCheckinSeq: 1,
     nextAdjustmentSeq: 1,
     nextRoundId: 1,
+    choiceSettings: [...DEFAULT_CHOICES],
   };
 }
 
 let store = loadStore();
+if (!store.choiceSettings) store.choiceSettings = [...DEFAULT_CHOICES]; // 古いstore.json互換
 
 function saveStore() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -139,6 +148,7 @@ io.on('connection', (socket) => {
     checkins: store.checkins,
     adjustments: store.adjustments,
     rounds: store.rounds,
+    choiceSettings: store.choiceSettings,
   });
 
   // ---------- QRスキャン（ID読み取り） ----------
@@ -168,10 +178,11 @@ io.on('connection', (socket) => {
     // 受付中のラウンドがあれば、賭け入力用の情報を追加で返す
     const round = getCurrentRound();
     if (round && round.status === 'open') {
-      if (round.bets[participantId]) {
-        socket.emit('round-bet-exists', { round, bet: round.bets[participantId] });
+      const existingBets = round.bets[participantId] || [];
+      if (existingBets.length >= MAX_BETS_PER_PARTICIPANT) {
+        socket.emit('round-bet-exists', { round, bets: existingBets });
       } else {
-        socket.emit('round-entry', { round, participant: { ...participant } });
+        socket.emit('round-entry', { round, participant: { ...participant }, betsSoFar: existingBets });
       }
     } else if (round && round.status === 'closed') {
       socket.emit('round-closed-notice', { round });
@@ -193,17 +204,26 @@ io.on('connection', (socket) => {
     io.emit('score-updated', { participant: { ...participant }, adjustment });
   });
 
-  // ---------- ラウンド開始 ----------
-  socket.on('start-round', (payload) => {
+  // ---------- 選択肢の設定（ラウンドとは独立。変更しない限り固定） ----------
+  socket.on('update-choices', (payload) => {
+    const raw = Array.isArray(payload && payload.choices) ? payload.choices : [];
+    const choices = Array.from({ length: CHOICE_COUNT }, (_, i) => {
+      const v = String(raw[i] || '').trim();
+      return v || DEFAULT_CHOICES[i];
+    });
+    store.choiceSettings = choices;
+    saveStore();
+    io.emit('choices-updated', { choices });
+    console.log(`選択肢の設定を更新しました: ${choices.join(', ')}`);
+  });
+
+  // ---------- ラウンド開始（選択肢は設定済みのものをそのまま使用） ----------
+  socket.on('start-round', () => {
     if (getCurrentRound()) {
       socket.emit('round-error', { message: '既に進行中のラウンドがあります。先に精算してください。' });
       return;
     }
-    const raw = Array.isArray(payload && payload.choices) ? payload.choices : [];
-    const choices = Array.from({ length: CHOICE_COUNT }, (_, i) => {
-      const v = String(raw[i] || '').trim();
-      return v || String(i + 1);
-    });
+    const choices = [...(store.choiceSettings || DEFAULT_CHOICES)];
     const round = {
       id: store.nextRoundId++,
       status: 'open',
@@ -235,8 +255,9 @@ io.on('connection', (socket) => {
       socket.emit('bet-error', { message: 'IDが見つかりません。先にQRを読み取ってください。' });
       return;
     }
-    if (round.bets[participantId]) {
-      socket.emit('bet-error', { message: 'このラウンドではすでに投票済みです。' });
+    const existingBets = round.bets[participantId] || [];
+    if (existingBets.length >= MAX_BETS_PER_PARTICIPANT) {
+      socket.emit('bet-error', { message: `このラウンドの投票回数（最大${MAX_BETS_PER_PARTICIPANT}回）に達しています。` });
       return;
     }
     const stake = Number(payload.stake);
@@ -281,11 +302,13 @@ io.on('connection', (socket) => {
       placedAt: new Date().toISOString(), placedDisplay: nowDisplay(),
       won: null, payout: null,
     };
-    round.bets[participantId] = bet;
-    const adjustment = addAdjustment(participantId, oldScore, participant.score, `ラウンド${round.id} 賭け金`);
+    if (!round.bets[participantId]) round.bets[participantId] = [];
+    round.bets[participantId].push(bet);
+    const betNumber = round.bets[participantId].length;
+    const adjustment = addAdjustment(participantId, oldScore, participant.score, `ラウンド${round.id} 賭け金(${betNumber}回目)`);
     saveStore();
 
-    socket.emit('bet-placed', { bet, participant: { ...participant } });
+    socket.emit('bet-placed', { bet, participant: { ...participant }, betsSoFar: round.bets[participantId] });
     io.emit('round-updated', { round });
     io.emit('score-updated', { participant: { ...participant }, adjustment });
   });
@@ -300,8 +323,9 @@ io.on('connection', (socket) => {
     const singleStakes = {};
     const trifectaStakes = {};
     let singlePool = 0, trifectaPool = 0;
+    const allBets = Object.values(round.bets).flat();
 
-    Object.values(round.bets).forEach(bet => {
+    allBets.forEach(bet => {
       if (bet.type === 'single') {
         singlePool += bet.stake;
         singleStakes[bet.selection] = (singleStakes[bet.selection] || 0) + bet.stake;
@@ -318,7 +342,8 @@ io.on('connection', (socket) => {
     });
     const trifectaRates = {};
     Object.keys(trifectaStakes).forEach(key => {
-      trifectaRates[key] = +(trifectaPool / trifectaStakes[key]).toFixed(2);
+      // 3連単は的中しにくいため、通常の按分レートにさらに倍率をかけて高配当にする
+      trifectaRates[key] = +((trifectaPool / trifectaStakes[key]) * TRIFECTA_RATE_MULTIPLIER).toFixed(2);
     });
 
     round.status = 'closed';
@@ -349,8 +374,9 @@ io.on('connection', (socket) => {
     const trifectaKey = [first, second, third].join('-');
     const updatedParticipants = [];
     const newAdjustments = [];
+    const allBets = Object.values(round.bets).flat();
 
-    Object.values(round.bets).forEach(bet => {
+    allBets.forEach(bet => {
       const participant = store.participants[bet.participantId];
       if (!participant) return;
       let won, rate;
@@ -389,15 +415,17 @@ io.on('connection', (socket) => {
     console.log(`ラウンド${round.id}を精算しました。結果: ${round.choices[first]} / ${round.choices[second]} / ${round.choices[third]}`);
   });
 
-  // ---------- 全データ初期化（本番前テスト用） ----------
+  // ---------- 全データ初期化（本番前テスト用。選択肢の設定は維持） ----------
   socket.on('reset-all', () => {
+    const preservedChoices = store.choiceSettings || [...DEFAULT_CHOICES];
     store = {
       participants: {}, checkins: [], adjustments: [], rounds: [],
       nextCheckinSeq: 1, nextAdjustmentSeq: 1, nextRoundId: 1,
+      choiceSettings: preservedChoices,
     };
     saveStore();
     io.emit('state-cleared');
-    console.log('全データをリセットしました。');
+    console.log('全データをリセットしました（選択肢の設定は維持）。');
   });
 
   socket.on('disconnect', () => {

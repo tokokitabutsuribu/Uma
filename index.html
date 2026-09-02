@@ -127,11 +127,19 @@
   <!-- ラウンド管理 -->
   <div class="view active" id="view-round">
 
+    <!-- 選択肢の設定（ラウンドとは独立・常設） -->
+    <div class="round-section" id="choiceSettingsSection">
+      <h2>選択肢の設定</h2>
+      <div class="sub">ここで設定した5つの選択肢が、次に開始するラウンドからずっと使われます（変更するまで固定）。</div>
+      <div class="choice-inputs" id="choiceInputs"></div>
+      <button class="btn" id="saveChoicesBtn">この内容で保存する</button>
+      <span id="choiceSavedNote" style="font-size:12px; color:var(--teal); margin-left:10px;"></span>
+    </div>
+
     <!-- 状態A: ラウンド未開始 -->
     <div class="round-section" id="roundStartSection">
       <h2>新しいラウンドを開始</h2>
-      <div class="sub">5つの選択肢を入力してください（空欄の場合は 1〜5 の番号になります）</div>
-      <div class="choice-inputs" id="choiceInputs"></div>
+      <div class="sub">現在の選択肢設定：<b id="currentChoicesPreview"></b>（変更する場合は上の「選択肢の設定」から）</div>
       <button class="btn primary" id="startRoundBtn">ラウンドを開始する</button>
       <div class="bet-error" id="startRoundError" style="color:var(--amber); font-size:13px; margin-top:8px;"></div>
     </div>
@@ -139,7 +147,7 @@
     <!-- 状態B: 受付中 -->
     <div class="round-section" id="roundOpenSection" style="display:none;">
       <h2 id="openRoundTitle">ラウンド 受付中</h2>
-      <div class="sub">参加者は読み取り端末でIDをスキャンし、その場で賭け金と予想を入力します。</div>
+      <div class="sub">参加者は読み取り端末でIDをスキャンし、その場で賭け金と予想を入力します（1人につき最大2回まで）。</div>
       <div class="round-stats">
         <div class="item"><div class="num" id="openBetCount">0</div><div class="label">投票件数</div></div>
         <div class="item"><div class="num" id="openSinglePool">0</div><div class="label">単勝 賭け金合計</div></div>
@@ -248,6 +256,7 @@
   let checkins = [];
   let adjustments = [];
   let rounds = [];
+  let choiceSettings = ['1', '2', '3', '4', '5'];
 
   function getCurrentRound() {
     if (!rounds.length) return null;
@@ -260,13 +269,25 @@
     }
     return null;
   }
+  // ラウンドのbetsは { participantId: [bet, ...] } なので、フラットな配列にして扱う
+  function flatBets(round) {
+    return Object.values(round.bets).flat();
+  }
 
   socket.on('full-state', (state) => {
     participants = {}; state.participants.forEach(p => participants[p.id] = p);
     checkins = state.checkins;
     adjustments = state.adjustments;
     rounds = state.rounds;
+    choiceSettings = state.choiceSettings || choiceSettings;
+    renderChoiceSettings();
     renderAll();
+  });
+
+  socket.on('choices-updated', ({ choices }) => {
+    choiceSettings = choices;
+    renderChoiceSettings();
+    if (currentView === 'round') renderRoundTab();
   });
 
   socket.on('new-checkin', ({ checkin, participant }) => {
@@ -363,13 +384,30 @@
     }).join('');
   }
 
-  // ---------- ラウンドタブ ----------
+  // ---------- ラウンドタブ：選択肢の設定（常設・ラウンドとは独立） ----------
   const choiceInputs = document.getElementById('choiceInputs');
   choiceInputs.innerHTML = [0,1,2,3,4].map(i => `<input type="text" placeholder="選択肢${i+1}（例：${i+1}）" id="choiceInput${i}">`).join('');
-  document.getElementById('startRoundBtn').addEventListener('click', () => {
+
+  function renderChoiceSettings() {
+    choiceSettings.forEach((v, i) => {
+      const el = document.getElementById(`choiceInput${i}`);
+      if (el && document.activeElement !== el) el.value = v; // 入力中の欄は上書きしない
+    });
+    const preview = document.getElementById('currentChoicesPreview');
+    if (preview) preview.textContent = choiceSettings.join(' / ');
+  }
+
+  document.getElementById('saveChoicesBtn').addEventListener('click', () => {
     const choices = [0,1,2,3,4].map(i => document.getElementById(`choiceInput${i}`).value.trim());
+    socket.emit('update-choices', { choices });
+    const note = document.getElementById('choiceSavedNote');
+    note.textContent = '保存しました（次回のラウンドから適用されます）';
+    setTimeout(() => { note.textContent = ''; }, 3000);
+  });
+
+  document.getElementById('startRoundBtn').addEventListener('click', () => {
     document.getElementById('startRoundError').textContent = '';
-    socket.emit('start-round', { choices });
+    socket.emit('start-round');
   });
 
   document.getElementById('closeRoundBtn').addEventListener('click', () => {
@@ -418,7 +456,7 @@
 
   function renderOpenRound(round) {
     document.getElementById('openRoundTitle').textContent = `ラウンド${round.id} 受付中（選択肢: ${round.choices.join(' / ')}）`;
-    const bets = Object.values(round.bets);
+    const bets = flatBets(round);
     document.getElementById('openBetCount').textContent = bets.length;
     document.getElementById('openSinglePool').textContent = bets.filter(b => b.type === 'single').reduce((s, b) => s + b.stake, 0);
     document.getElementById('openTrifectaPool').textContent = bets.filter(b => b.type === 'trifecta').reduce((s, b) => s + b.stake, 0);
@@ -470,7 +508,7 @@
     const r = round.result;
     document.getElementById('settledSummary').textContent =
       `ラウンド${round.id}：結果 1着「${round.choices[r.first]}」 2着「${round.choices[r.second]}」 3着「${round.choices[r.third]}」（${round.settledDisplay}精算）`;
-    const bets = Object.values(round.bets).slice().sort((a, b) => (b.payout || 0) - (a.payout || 0));
+    const bets = flatBets(round).slice().sort((a, b) => (b.payout || 0) - (a.payout || 0));
     document.getElementById('settledBetsBody').innerHTML = bets.map(b => `
       <tr>
         <td class="id-mono">${escapeHtml(b.participantId)}</td>
@@ -489,7 +527,7 @@
     el.innerHTML = settledRounds.map(r => `
       <div class="round-history-item">
         ラウンド${r.id}：選択肢 ${r.choices.join(' / ')}｜結果 1着「${r.choices[r.result.first]}」2着「${r.choices[r.result.second]}」3着「${r.choices[r.result.third]}」｜
-        投票 ${Object.keys(r.bets).length}件｜単勝プール ${r.pools.single}｜3連単プール ${r.pools.trifecta}｜${r.settledDisplay}精算
+        投票 ${flatBets(r).length}件｜単勝プール ${r.pools.single}｜3連単プール ${r.pools.trifecta}｜${r.settledDisplay}精算
       </div>`).join('');
   }
 

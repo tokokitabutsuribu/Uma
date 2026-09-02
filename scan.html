@@ -69,6 +69,7 @@
     display:flex; flex-direction:column; padding:18px; overflow-y:auto;
   }
   .bet-overlay.hidden{ display:none; }
+  .hidden{ display:none !important; }
   .bet-card{ background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:20px; display:flex; flex-direction:column; gap:16px; }
   .bet-title{ font-size:16px; font-weight:700; }
   .bet-sub{ font-size:13px; color:#9aa3b5; }
@@ -184,6 +185,7 @@
 
     <div class="bet-done hidden" id="betDone">
       <div class="big" id="betDoneText"></div>
+      <button class="btn-submit" id="betAnotherBtn" style="flex:none; padding:11px 20px;">もう1回賭ける</button>
       <button class="btn-cancel" id="betDoneCloseBtn">閉じる</button>
     </div>
   </div>
@@ -277,15 +279,21 @@
   const betCancelBtn = document.getElementById('betCancelBtn');
   const betDone = document.getElementById('betDone');
   const betDoneText = document.getElementById('betDoneText');
+  const betAnotherBtn = document.getElementById('betAnotherBtn');
   const betDoneCloseBtn = document.getElementById('betDoneCloseBtn');
   const betCardBody = document.querySelectorAll('.bet-card > div:not(.bet-done)');
 
-  let betState = null; // { round, participant, type, single: idx|null, trifecta: [idx,...] }
+  let betState = null; // { round, participant, type, single: idx|null, trifecta: [idx,...], betsSoFar }
+  const MAX_BETS_PER_PARTICIPANT = 2;
 
-  function openBetOverlay(round, participant) {
-    betState = { round, participant, type: 'single', single: null, trifecta: [] };
+  function openBetOverlay(round, participant, betsSoFar) {
+    betsSoFar = betsSoFar || [];
+    betState = { round, participant, type: 'single', single: null, trifecta: [], betsSoFar };
+    const remaining = MAX_BETS_PER_PARTICIPANT - betsSoFar.length;
     betTitle.textContent = `ラウンド${round.id}：ID ${participant.id} さんの参加登録`;
-    betSub.textContent = '賭け方と予想を選んで、賭け金を入力してください。';
+    betSub.textContent = betsSoFar.length
+      ? `このラウンドでは既に${betsSoFar.length}回投票済みです。あと${remaining}回賭けられます。`
+      : `1ラウンドにつき最大${MAX_BETS_PER_PARTICIPANT}回まで賭けられます。賭け方と予想を選んでください。`;
     betScore.textContent = participant.score;
     betError.textContent = '';
     stakeInput.value = '';
@@ -408,25 +416,36 @@
 
   socket.on('bet-error', (err) => { betError.textContent = err.message; });
 
-  socket.on('bet-placed', ({ bet }) => {
+  socket.on('bet-placed', ({ bet, participant, betsSoFar }) => {
     betCardBody.forEach(el => el.classList.add('hidden'));
     betDone.classList.remove('hidden');
     const choiceText = bet.type === 'single'
       ? betState.round.choices[bet.selection]
       : bet.selection.map(i => betState.round.choices[i]).join(' → ');
-    betDoneText.textContent = `受付完了：${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake} 点を賭けました。結果発表をお待ちください。`;
+    const remaining = MAX_BETS_PER_PARTICIPANT - (betsSoFar ? betsSoFar.length : 1);
+    let text = `受付完了：${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake} 点を賭けました。`;
+    text += remaining > 0 ? `（現在スコア: ${participant.score}）あと${remaining}回賭けられます。` : '結果発表をお待ちください。';
+    betDoneText.textContent = text;
+
+    betAnotherBtn.classList.toggle('hidden', remaining <= 0);
+    if (remaining > 0) {
+      betAnotherBtn.onclick = () => openBetOverlay(betState.round, participant, betsSoFar);
+    }
   });
 
-  socket.on('round-entry', ({ round, participant }) => {
-    openBetOverlay(round, participant);
+  socket.on('round-entry', ({ round, participant, betsSoFar }) => {
+    openBetOverlay(round, participant, betsSoFar);
   });
 
-  socket.on('round-bet-exists', ({ round, bet }) => {
-    const choiceText = bet.type === 'single'
-      ? round.choices[bet.selection]
-      : bet.selection.map(i => round.choices[i]).join(' → ');
-    resultId.textContent = `ID: ${bet.participantId}（このラウンドは投票済み）`;
-    resultMeta.innerHTML = `<span>${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake} 点</span>`;
+  socket.on('round-bet-exists', ({ round, bets }) => {
+    const list = (bets || []).map(bet => {
+      const choiceText = bet.type === 'single'
+        ? round.choices[bet.selection]
+        : bet.selection.map(i => round.choices[i]).join(' → ');
+      return `${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake} 点`;
+    });
+    resultId.textContent = `ID: ${bets && bets[0] ? bets[0].participantId : ''}（このラウンドは投票上限に達しています）`;
+    resultMeta.innerHTML = list.map(t => `<span>${t}</span>`).join('');
   });
 
   socket.on('round-closed-notice', () => {
