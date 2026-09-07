@@ -154,7 +154,7 @@
       <div class="bet-title" id="betTitle">ラウンド参加</div>
       <div class="bet-sub" id="betSub"></div>
     </div>
-    <div class="score-line">現在スコア：<b id="betScore">0</b></div>
+    <div class="score-line">現在の所持ジュール数：<b id="betScore">0</b>J</div>
 
     <div>
       <div class="bet-sub" style="margin-bottom:6px;">賭け方</div>
@@ -173,7 +173,7 @@
     <div>
       <div class="bet-sub" style="margin-bottom:6px;">賭け金</div>
       <div class="stake-quick" id="stakeQuick"></div>
-      <input type="number" id="stakeInput" min="1" step="1" placeholder="賭け金を入力" style="margin-top:8px;">
+      <input type="number" id="stakeInput" min="1" step="1" placeholder="賭け金を入力（単位: J）" style="margin-top:8px;">
     </div>
 
     <div class="bet-error" id="betError"></div>
@@ -251,11 +251,11 @@
 
   socket.on('scan-ack', (ack) => {
     resultId.textContent = `ID: ${ack.participantId}`;
-    resultMeta.innerHTML = `<span>スコア <b>${ack.score}</b></span><span>累計 <b>${ack.checkinCount}</b> 回目</span>`;
+    resultMeta.innerHTML = `<span>所持ジュール数 <b>${ack.score}</b>J</span><span>累計 <b>${ack.checkinCount}</b> 回目</span>`;
     resultPanel.classList.remove('success', 'new-participant');
     if (ack.isNew) {
       resultPanel.classList.add('new-participant');
-      resultMeta.innerHTML = `<span class="badge">新規登録・初期スコア1000</span>` + resultMeta.innerHTML;
+      resultMeta.innerHTML = `<span class="badge">新規登録・初期ジュール数1000J</span>` + resultMeta.innerHTML;
     } else {
       resultPanel.classList.add('success');
     }
@@ -374,7 +374,7 @@
     const options = [Math.round(score * 0.1), Math.round(score * 0.25), Math.round(score * 0.5), score]
       .map(v => Math.max(1, v));
     const labels = ['10%', '25%', '50%', '全額'];
-    stakeQuick.innerHTML = options.map((v, i) => `<button data-v="${v}">${labels[i]}<br>${v}</button>`).join('');
+    stakeQuick.innerHTML = options.map((v, i) => `<button data-v="${v}">${labels[i]}<br>${v}J</button>`).join('');
     stakeQuick.querySelectorAll('button').forEach(btn => {
       btn.addEventListener('click', () => {
         stakeInput.value = btn.dataset.v;
@@ -423,8 +423,8 @@
       ? betState.round.choices[bet.selection]
       : bet.selection.map(i => betState.round.choices[i]).join(' → ');
     const remaining = MAX_BETS_PER_PARTICIPANT - (betsSoFar ? betsSoFar.length : 1);
-    let text = `受付完了：${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake} 点を賭けました。`;
-    text += remaining > 0 ? `（現在スコア: ${participant.score}）あと${remaining}回賭けられます。` : '結果発表をお待ちください。';
+    let text = `受付完了：${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake}J を賭けました。`;
+    text += remaining > 0 ? `（現在の所持ジュール数: ${participant.score}J）あと${remaining}回賭けられます。` : '結果発表をお待ちください。';
     betDoneText.textContent = text;
 
     betAnotherBtn.classList.toggle('hidden', remaining <= 0);
@@ -442,7 +442,7 @@
       const choiceText = bet.type === 'single'
         ? round.choices[bet.selection]
         : bet.selection.map(i => round.choices[i]).join(' → ');
-      return `${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake} 点`;
+      return `${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake}J`;
     });
     resultId.textContent = `ID: ${bets && bets[0] ? bets[0].participantId : ''}（このラウンドは投票上限に達しています）`;
     resultMeta.innerHTML = list.map(t => `<span>${t}</span>`).join('');

@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>客画面</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  :root{
+    --ink:#0d1117; --paper:#f6f5f2; --teal:#0f6e64; --teal-bright:#18a894;
+    --amber:#b5622a; --panel:#171d2b; --line:#2a3140;
+  }
+  *{box-sizing:border-box;}
+  html, body{ height:100%; margin:0; }
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;
+    background:var(--ink); color:var(--paper); overflow:hidden;
+  }
+  .screen{ width:100vw; height:100vh; display:none; }
+  .screen.active{ display:flex; }
+
+  /* ---- カメラ画面 ---- */
+  #cameraScreen{ position:relative; background:#000; align-items:center; justify-content:center; }
+  #remoteVideo{ width:100%; height:100%; object-fit:contain; background:#000; }
+  .cam-overlay{
+    position:absolute; top:24px; left:24px; padding:8px 18px; border-radius:10px;
+    background:rgba(15,110,100,0.85); font-size:22px; font-weight:700; letter-spacing:0.02em;
+  }
+  .cam-waiting{ font-size:28px; color:#8a93a6; text-align:center; }
+
+  /* ---- ダッシュボード画面 ---- */
+  #dashboardScreen{
+    flex-direction:column; padding:40px 56px; gap:28px; justify-content:flex-start;
+  }
+  #dashboardScreen h1{ margin:0; font-size:30px; font-weight:800; letter-spacing:0.02em; }
+  #dashboardScreen .round-label{ font-size:16px; color:#9aa3b5; margin-top:4px; }
+
+  .dash-grid{ display:grid; grid-template-columns:1.1fr 1fr; gap:28px; flex:1; min-height:0; }
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:26px;
+    display:flex; flex-direction:column; gap:16px; overflow:hidden;
+  }
+  .panel h2{ margin:0; font-size:20px; font-weight:700; }
+
+  table{ width:100%; border-collapse:collapse; font-size:18px; }
+  thead th{ text-align:left; color:#9aa3b5; font-weight:600; font-size:13px; padding:6px 8px; border-bottom:1px solid var(--line); }
+  tbody td{ padding:10px 8px; border-bottom:1px solid #232b3d; }
+  .choice-name{ font-weight:700; font-size:20px; }
+  .rate-val{ font-weight:800; font-size:22px; color:var(--teal-bright); }
+  .rate-val.trifecta{ color:#c9a24a; }
+  .empty-note{ color:#5c6577; font-size:15px; }
+
+  .rank-bars{ display:flex; flex-direction:column; gap:10px; overflow-y:auto; }
+  .rank-row{ display:flex; align-items:center; gap:12px; }
+  .rank-row .name{ width:70px; font-weight:700; font-size:18px; flex-shrink:0; }
+  .rank-row .bars{ flex:1; display:flex; gap:4px; }
+  .rank-bar{ flex:1; background:#232b3d; border-radius:6px; padding:6px 8px; font-size:13px; display:flex; justify-content:space-between; }
+  .rank-bar b{ font-size:16px; }
+  .rank-bar.gold{ background:#4a3a12; }
+  .rank-bar.silver{ background:#33394a; }
+  .rank-bar.bronze{ background:#402a1a; }
+
+  .winners-panel{ grid-column:1 / -1; }
+  .winner-chips{ display:flex; flex-wrap:wrap; gap:10px; }
+  .winner-chip{
+    background:linear-gradient(135deg, var(--teal), var(--teal-bright)); color:#fff; font-weight:700;
+    padding:10px 18px; border-radius:999px; font-size:18px;
+  }
+</style>
+</head>
+<body>
+
+<!-- カメラ映像画面（ラウンド受付中） -->
+<div class="screen" id="cameraScreen">
+  <div class="cam-overlay" id="camOverlay" style="display:none;"></div>
+  <video id="remoteVideo" autoplay playsinline></video>
+  <div class="cam-waiting" id="camWaiting">カメラ映像を準備中です…</div>
+</div>
+
+<!-- ダッシュボード画面（受付中以外） -->
+<div class="screen active" id="dashboardScreen">
+  <div>
+    <h1>予想ゲーム 結果ボード</h1>
+    <div class="round-label" id="roundLabel">ラウンド待機中</div>
+  </div>
+  <div class="dash-grid">
+    <div class="panel">
+      <h2>現在のレート</h2>
+      <div id="ratesArea"><div class="empty-note">まだレートが確定していません。</div></div>
+    </div>
+    <div class="panel">
+      <h2>選択肢ごとの着順回数</h2>
+      <div class="rank-bars" id="rankArea"><div class="empty-note">まだ結果がありません。</div></div>
+    </div>
+    <div class="panel winners-panel">
+      <h2 id="winnersTitle">前ラウンドの勝者</h2>
+      <div class="winner-chips" id="winnersArea"><div class="empty-note">まだ勝者がいません。</div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const socket = io();
+  const cameraScreen = document.getElementById('cameraScreen');
+  const dashboardScreen = document.getElementById('dashboardScreen');
+  const remoteVideo = document.getElementById('remoteVideo');
+  const camWaiting = document.getElementById('camWaiting');
+  const camOverlay = document.getElementById('camOverlay');
+
+  let rounds = [];
+  let choiceSettings = ['1', '2', '3', '4', '5'];
+  let cameraOnline = false;
+  let currentPc = null;
+  let currentCameraId = null;
+
+  function getCurrentRound() {
+    if (!rounds.length) return null;
+    const r = rounds[rounds.length - 1];
+    return r.status === 'settled' ? null : r;
+  }
+  function getLastRatedRound() {
+    // rates が確定している一番新しいラウンド（closed または settled）
+    for (let i = rounds.length - 1; i >= 0; i--) {
+      if (rounds[i].rates) return rounds[i];
+    }
+    return null;
+  }
+  function getLastSettledRound() {
+    for (let i = rounds.length - 1; i >= 0; i--) {
+      if (rounds[i].status === 'settled') return rounds[i];
+    }
+    return null;
+  }
+  function flatBets(round) { return Object.values(round.bets).flat(); }
+
+  // ---------- 画面切り替え ----------
+  function updateScreen() {
+    const round = getCurrentRound();
+    const showCamera = round && round.status === 'open';
+    cameraScreen.classList.toggle('active', showCamera);
+    dashboardScreen.classList.toggle('active', !showCamera);
+    if (showCamera) {
+      camOverlay.style.display = 'block';
+      camOverlay.textContent = `ラウンド${round.id} 受付中`;
+      ensureViewerConnection();
+    } else {
+      renderDashboard();
+    }
+  }
+
+  // ---------- ダッシュボード描画 ----------
+  function renderDashboard() {
+    const round = getCurrentRound();
+    document.getElementById('roundLabel').textContent = round && round.status === 'closed'
+      ? `ラウンド${round.id} 受付終了・結果待ち`
+      : '次のラウンドを準備中です';
+
+    // 現在のレート
+    const ratedRound = getLastRatedRound();
+    const ratesArea = document.getElementById('ratesArea');
+    if (!ratedRound) {
+      ratesArea.innerHTML = '<div class="empty-note">まだレートが確定していません。</div>';
+    } else {
+      const singleRows = ratedRound.choices.map((label, idx) => {
+        const rate = ratedRound.rates.single[idx];
+        return `<tr><td class="choice-name">${escapeHtml(label)}</td><td>${rate ? `<span class="rate-val">${rate}倍</span>` : '<span class="empty-note">賭けなし</span>'}</td></tr>`;
+      }).join('');
+      const triKeys = Object.keys(ratedRound.rates.trifecta || {});
+      const triRows = triKeys.length
+        ? triKeys.map(key => {
+            const names = key.split('-').map(i => ratedRound.choices[Number(i)]).join(' → ');
+            return `<tr><td>${escapeHtml(names)}</td><td><span class="rate-val trifecta">${ratedRound.rates.trifecta[key]}倍</span></td></tr>`;
+          }).join('')
+        : '<tr><td colspan="2" class="empty-note">賭けなし</td></tr>';
+      ratesArea.innerHTML = `
+        <table><thead><tr><th>単勝</th><th>レート</th></tr></thead><tbody>${singleRows}</tbody></table>
+        <table style="margin-top:14px;"><thead><tr><th>3連単</th><th>レート</th></tr></thead><tbody>${triRows}</tbody></table>
+      `;
+    }
+
+    // 選択肢ごとの着順回数（全精算済みラウンド集計）
+    const settled = rounds.filter(r => r.status === 'settled');
+    const rankArea = document.getElementById('rankArea');
+    if (!settled.length) {
+      rankArea.innerHTML = '<div class="empty-note">まだ結果がありません。</div>';
+    } else {
+      const tally = choiceSettings.map(() => ({ first: 0, second: 0, third: 0 }));
+      settled.forEach(r => {
+        if (!r.result) return;
+        if (tally[r.result.first]) tally[r.result.first].first++;
+        if (tally[r.result.second]) tally[r.result.second].second++;
+        if (tally[r.result.third]) tally[r.result.third].third++;
+      });
+      rankArea.innerHTML = choiceSettings.map((label, idx) => `
+        <div class="rank-row">
+          <div class="name">${escapeHtml(label)}</div>
+          <div class="bars">
+            <div class="rank-bar gold">1着<b>${tally[idx].first}</b></div>
+            <div class="rank-bar silver">2着<b>${tally[idx].second}</b></div>
+            <div class="rank-bar bronze">3着<b>${tally[idx].third}</b></div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    // 前ラウンドの勝者
+    const lastSettled = getLastSettledRound();
+    const winnersTitle = document.getElementById('winnersTitle');
+    const winnersArea = document.getElementById('winnersArea');
+    if (!lastSettled) {
+      winnersTitle.textContent = '前ラウンドの勝者';
+      winnersArea.innerHTML = '<div class="empty-note">まだ勝者がいません。</div>';
+    } else {
+      winnersTitle.textContent = `ラウンド${lastSettled.id} の勝者`;
+      const winnerIds = [...new Set(flatBets(lastSettled).filter(b => b.won).map(b => b.participantId))];
+      winnersArea.innerHTML = winnerIds.length
+        ? winnerIds.map(id => `<div class="winner-chip">${escapeHtml(id)}</div>`).join('')
+        : '<div class="empty-note">今回は的中者がいませんでした。</div>';
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+  }
+
+  // ---------- サーバーからの状態受信 ----------
+  socket.on('full-state', (state) => {
+    rounds = state.rounds || [];
+    choiceSettings = state.choiceSettings || choiceSettings;
+    updateScreen();
+  });
+  socket.on('round-started', ({ round }) => { upsertRound(round); updateScreen(); });
+  socket.on('round-updated', ({ round }) => { upsertRound(round); });
+  socket.on('round-closed', ({ round }) => { upsertRound(round); updateScreen(); });
+  socket.on('round-settled', ({ round }) => { upsertRound(round); updateScreen(); });
+  socket.on('state-cleared', () => { rounds = []; updateScreen(); });
+  function upsertRound(round) {
+    const i = rounds.findIndex(r => r.id === round.id);
+    if (i === -1) rounds.push(round); else rounds[i] = round;
+  }
+
+  // ---------- カメラ映像（WebRTC視聴側） ----------
+  socket.on('camera-status', ({ online }) => { cameraOnline = online; if (cameraScreen.classList.contains('active')) ensureViewerConnection(); });
+  socket.on('camera-online', () => { cameraOnline = true; if (cameraScreen.classList.contains('active')) ensureViewerConnection(); });
+  socket.on('camera-offline', () => {
+    cameraOnline = false;
+    closePeerConnection();
+    camWaiting.style.display = 'block';
+    camWaiting.textContent = 'カメラが接続されていません。';
+  });
+
+  function ensureViewerConnection() {
+    if (!cameraOnline) {
+      camWaiting.style.display = 'block';
+      camWaiting.textContent = 'カメラ映像を準備中です…';
+      return;
+    }
+    if (currentPc) return; // 既に接続済み/接続試行中
+    socket.emit('viewer-join');
+  }
+
+  function closePeerConnection() {
+    if (currentPc) { currentPc.close(); currentPc = null; }
+    currentCameraId = null;
+    remoteVideo.srcObject = null;
+  }
+
+  socket.on('webrtc-signal', async ({ fromId, type, payload }) => {
+    if (type === 'offer') {
+      closePeerConnection();
+      currentCameraId = fromId;
+      const pc = new RTCPeerConnection();
+      pc.ontrack = (e) => {
+        remoteVideo.srcObject = e.streams[0];
+        camWaiting.style.display = 'none';
+      };
+      pc.onicecandidate = (e) => {
+        if (e.candidate) socket.emit('webrtc-signal', { targetId: fromId, type: 'ice-candidate', payload: e.candidate });
+      };
+      pc.onconnectionstatechange = () => {
+        if (['disconnected', 'failed', 'closed'].includes(pc.connectionState) && currentPc === pc) {
+          closePeerConnection();
+        }
+      };
+      currentPc = pc;
+      await pc.setRemoteDescription(new RTCSessionDescription(payload));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('webrtc-signal', { targetId: fromId, type: 'answer', payload: answer });
+    } else if (type === 'ice-candidate' && currentPc && fromId === currentCameraId) {
+      try { await currentPc.addIceCandidate(new RTCIceCandidate(payload)); } catch (e) { /* 無視 */ }
+    }
+  });
+</script>
+</body>
+</html>

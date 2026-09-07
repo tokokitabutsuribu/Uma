@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>カメラ送信端末</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+  :root{ --ink:#151a23; --paper:#f6f5f2; --teal:#0f6e64; --amber:#b5622a; }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;
+    background:var(--ink); color:var(--paper); min-height:100vh; display:flex; flex-direction:column; padding:16px; gap:14px;
+  }
+  h1{ margin:0; font-size:18px; font-weight:600; }
+  .status-row{ display:flex; align-items:center; gap:8px; font-size:13px; color:#9aa3b5; flex-wrap:wrap; }
+  .dot{ width:9px; height:9px; border-radius:50%; background:#5b6577; }
+  .dot.on{ background:var(--teal); }
+  .dot.warn{ background:var(--amber); }
+  video{ width:100%; border-radius:14px; background:#000; border:1px solid #2a3140; }
+  .hint{ font-size:12px; color:#8a93a6; line-height:1.6; }
+  .viewer-count{ font-size:13px; color:#c7cede; }
+  select, button{
+    font-family:inherit; font-size:14px; padding:10px 14px; border-radius:9px; border:1px solid #3a4355;
+    background:#1e2431; color:var(--paper); cursor:pointer;
+  }
+  button.primary{ background:var(--teal); border-color:var(--teal); }
+</style>
+</head>
+<body>
+  <h1>カメラ送信端末</h1>
+  <div class="status-row">
+    <span class="dot" id="serverDot"></span><span id="serverStatus">サーバー接続待ち…</span>
+  </div>
+  <div class="status-row">
+    <span class="dot" id="camDot"></span><span id="camStatus">カメラ未起動</span>
+  </div>
+  <div class="viewer-count" id="viewerCount">視聴中の客画面：0台</div>
+
+  <video id="localVideo" autoplay playsinline muted></video>
+
+  <div class="status-row">
+    <select id="cameraSelect"></select>
+    <button class="primary" id="startBtn">カメラを起動して送信開始</button>
+  </div>
+
+  <p class="hint">
+    このページを開いた端末のカメラ映像が、客画面（public.html）にリアルタイムで送信されます。
+    複数カメラがある端末では、上のプルダウンで使うカメラを選べます。送信中はこのページを閉じたりスリープさせたりしないでください。
+  </p>
+
+<script>
+  const socket = io();
+  const serverDot = document.getElementById('serverDot');
+  const serverStatus = document.getElementById('serverStatus');
+  const camDot = document.getElementById('camDot');
+  const camStatus = document.getElementById('camStatus');
+  const viewerCount = document.getElementById('viewerCount');
+  const localVideo = document.getElementById('localVideo');
+  const cameraSelect = document.getElementById('cameraSelect');
+  const startBtn = document.getElementById('startBtn');
+
+  socket.on('connect', () => { serverDot.classList.add('on'); serverStatus.textContent = 'サーバーに接続中'; });
+  socket.on('disconnect', () => { serverDot.classList.remove('on'); serverStatus.textContent = '切断されました'; });
+
+  let localStream = null;
+  const peerConnections = {}; // viewerId -> RTCPeerConnection
+  let viewers = new Set();
+
+  // 使用可能なカメラ一覧を取得（権限確認のため一度ダミーで開いてから列挙）
+  async function listCameras() {
+    try {
+      const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
+      tmp.getTracks().forEach(t => t.stop());
+    } catch (e) { /* 後段のstartでエラー表示するので無視 */ }
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cams = devices.filter(d => d.kind === 'videoinput');
+    cameraSelect.innerHTML = cams.map((c, i) => `<option value="${c.deviceId}">${c.label || 'カメラ' + (i + 1)}</option>`).join('');
+  }
+  listCameras();
+
+  startBtn.addEventListener('click', async () => {
+    try {
+      const deviceId = cameraSelect.value;
+      const constraints = { video: deviceId ? { deviceId: { exact: deviceId } } : true, audio: false };
+      localStream = await navigator.mediaDevices.getUserMedia(constraints);
+      localVideo.srcObject = localStream;
+      camDot.classList.add('on');
+      camStatus.textContent = 'カメラ起動中・送信可能';
+      socket.emit('camera-register');
+      startBtn.textContent = '送信中';
+      startBtn.disabled = true;
+    } catch (err) {
+      camDot.classList.add('warn');
+      camStatus.textContent = 'カメラ起動に失敗しました: ' + err.message;
+    }
+  });
+
+  function createPeerConnectionFor(viewerId) {
+    const pc = new RTCPeerConnection();
+    if (localStream) {
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    }
+    pc.onicecandidate = (e) => {
+      if (e.candidate) {
+        socket.emit('webrtc-signal', { targetId: viewerId, type: 'ice-candidate', payload: e.candidate });
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+        cleanupViewer(viewerId);
+      }
+    };
+    peerConnections[viewerId] = pc;
+    return pc;
+  }
+
+  function cleanupViewer(viewerId) {
+    const pc = peerConnections[viewerId];
+    if (pc) { pc.close(); delete peerConnections[viewerId]; }
+    viewers.delete(viewerId);
+    viewerCount.textContent = `視聴中の客画面：${viewers.size}台`;
+  }
+
+  socket.on('viewer-joined', async ({ viewerId }) => {
+    viewers.add(viewerId);
+    viewerCount.textContent = `視聴中の客画面：${viewers.size}台`;
+    const pc = createPeerConnectionFor(viewerId);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('webrtc-signal', { targetId: viewerId, type: 'offer', payload: offer });
+  });
+
+  socket.on('viewer-left', ({ viewerId }) => cleanupViewer(viewerId));
+
+  socket.on('webrtc-signal', async ({ fromId, type, payload }) => {
+    const pc = peerConnections[fromId];
+    if (!pc) return;
+    if (type === 'answer') {
+      await pc.setRemoteDescription(new RTCSessionDescription(payload));
+    } else if (type === 'ice-candidate') {
+      try { await pc.addIceCandidate(new RTCIceCandidate(payload)); } catch (e) { /* 無視 */ }
+    }
+  });
+</script>
+</body>
+</html>

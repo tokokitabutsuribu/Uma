@@ -89,6 +89,9 @@ function loadStore() {
 let store = loadStore();
 if (!store.choiceSettings) store.choiceSettings = [...DEFAULT_CHOICES]; // 古いstore.json互換
 
+// カメラ端末（客画面へ映像を送る側）の接続情報。1台のみを想定（後から繋いだ方が優先）。
+let cameraSocketId = null;
+
 function saveStore() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   const tmpPath = STORE_PATH + '.tmp';
@@ -428,8 +431,39 @@ io.on('connection', (socket) => {
     console.log('全データをリセットしました（選択肢の設定は維持）。');
   });
 
+  // ---------- カメラ映像の中継（WebRTCのシグナリングのみ。映像そのものは中継しない） ----------
+  // カメラ端末（camera.html）と客画面（public.html）が直接P2Vで映像をやり取りするための
+  // 「connection確立の橋渡し」だけをサーバーが行う。映像データそのものはサーバーを通らない。
+  socket.emit('camera-status', { online: !!cameraSocketId });
+
+  socket.on('camera-register', () => {
+    cameraSocketId = socket.id;
+    io.emit('camera-online', {});
+    console.log('カメラ端末が接続しました:', socket.id);
+  });
+
+  socket.on('viewer-join', () => {
+    if (cameraSocketId) {
+      io.to(cameraSocketId).emit('viewer-joined', { viewerId: socket.id });
+    }
+  });
+
+  // offer/answer/ICE candidateを、指定した相手（targetId）だけに転送する
+  socket.on('webrtc-signal', (msg) => {
+    if (!msg || !msg.targetId) return;
+    io.to(msg.targetId).emit('webrtc-signal', { fromId: socket.id, type: msg.type, payload: msg.payload });
+  });
+
   socket.on('disconnect', () => {
     console.log('端末が切断しました:', socket.id);
+    if (socket.id === cameraSocketId) {
+      cameraSocketId = null;
+      io.emit('camera-offline', {});
+      console.log('カメラ端末が切断しました。');
+    } else {
+      // 切断した端末がカメラの視聴者だった場合、カメラ側に後片付けを通知
+      if (cameraSocketId) io.to(cameraSocketId).emit('viewer-left', { viewerId: socket.id });
+    }
   });
 });
 
@@ -448,6 +482,8 @@ server.listen(PORT, '0.0.0.0', () => {
   addresses.forEach((addr) => {
     console.log(`  読み取り端末用: https://${addr}:${PORT}/scan.html`);
     console.log(`  管理デバイス用: https://${addr}:${PORT}/admin.html`);
+    console.log(`  カメラ送信端末用: https://${addr}:${PORT}/camera.html`);
+    console.log(`  客画面用: https://${addr}:${PORT}/public.html`);
   });
   console.log('※自己署名証明書のため、各端末で初回アクセス時に');
   console.log('　「保護されていません」等の警告が出ます。詳細を開いて');
