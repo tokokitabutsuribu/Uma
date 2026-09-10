@@ -60,7 +60,7 @@ const { cert, key } = getOrCreateCertificate();
 const server = https.createServer({ cert, key }, app);
 const io = new Server(server);
 
-app.use(express.static('public'));
+app.use(express.static('UMA')); // クライアント用HTML一式を置くフォルダ名（旧: public）
 // html5-qrcode を外部CDNに頼らず自己ホスト化（npm installでnode_modulesに入る）
 app.use('/vendor/html5-qrcode', express.static(path.join(__dirname, 'node_modules', 'html5-qrcode')));
 
@@ -89,8 +89,9 @@ function loadStore() {
 let store = loadStore();
 if (!store.choiceSettings) store.choiceSettings = [...DEFAULT_CHOICES]; // 古いstore.json互換
 
-// カメラ端末（客画面へ映像を送る側）の接続情報。1台のみを想定（後から繋いだ方が優先）。
-let cameraSocketId = null;
+// カメラ端末（客画面へ映像を送る側）の接続情報。最大2台まで、接続順（1台目=スロット1、2台目=スロット2）。
+let cameras = []; // socket.idの配列
+const MAX_CAMERAS = 2;
 // 客画面の表示モード。'auto'＝ラウンド状態に連動（従来動作）／'camera'＝カメラ固定／'dashboard'＝結果ボード固定
 let publicScreenMode = 'auto';
 
@@ -437,18 +438,23 @@ io.on('connection', (socket) => {
   // ---------- カメラ映像の中継（WebRTCのシグナリングのみ。映像そのものは中継しない） ----------
   // カメラ端末（camera.html）と客画面（public.html）が直接P2Vで映像をやり取りするための
   // 「connection確立の橋渡し」だけをサーバーが行う。映像データそのものはサーバーを通らない。
-  socket.emit('camera-status', { online: !!cameraSocketId });
+  // 最大2台のカメラを同時接続でき、客画面側で画面分割表示する。
+  socket.emit('camera-list', { cameras: cameras.map((id, i) => ({ id, slot: i + 1 })) });
 
   socket.on('camera-register', () => {
-    cameraSocketId = socket.id;
-    io.emit('camera-online', {});
-    console.log('カメラ端末が接続しました:', socket.id);
+    if (cameras.includes(socket.id)) return; // 二重登録防止
+    if (cameras.length >= MAX_CAMERAS) {
+      socket.emit('camera-register-error', { message: `カメラは既に${MAX_CAMERAS}台接続されています。` });
+      return;
+    }
+    cameras.push(socket.id);
+    io.emit('camera-list', { cameras: cameras.map((id, i) => ({ id, slot: i + 1 })) });
+    console.log(`カメラ端末が接続しました（スロット${cameras.length}）:`, socket.id);
   });
 
   socket.on('viewer-join', () => {
-    if (cameraSocketId) {
-      io.to(cameraSocketId).emit('viewer-joined', { viewerId: socket.id });
-    }
+    // 現在接続中の全カメラに対して、それぞれ個別にオファーを作ってもらう
+    cameras.forEach(camId => io.to(camId).emit('viewer-joined', { viewerId: socket.id }));
   });
 
   // offer/answer/ICE candidateを、指定した相手（targetId）だけに転送する
@@ -468,13 +474,14 @@ io.on('connection', (socket) => {
 
   socket.on('disconnect', () => {
     console.log('端末が切断しました:', socket.id);
-    if (socket.id === cameraSocketId) {
-      cameraSocketId = null;
-      io.emit('camera-offline', {});
-      console.log('カメラ端末が切断しました。');
+    if (cameras.includes(socket.id)) {
+      cameras = cameras.filter(id => id !== socket.id);
+      io.emit('camera-list', { cameras: cameras.map((id, i) => ({ id, slot: i + 1 })) });
+      io.emit('camera-disconnected', { cameraId: socket.id });
+      console.log('カメラ端末が切断しました:', socket.id);
     } else {
-      // 切断した端末がカメラの視聴者だった場合、カメラ側に後片付けを通知
-      if (cameraSocketId) io.to(cameraSocketId).emit('viewer-left', { viewerId: socket.id });
+      // 切断した端末がカメラの視聴者だった場合、全カメラに後片付けを通知
+      cameras.forEach(camId => io.to(camId).emit('viewer-left', { viewerId: socket.id }));
     }
   });
 });

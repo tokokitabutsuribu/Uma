@@ -19,12 +19,16 @@
   .screen{ width:100vw; height:100vh; display:none; }
   .screen.active{ display:flex; }
 
-  /* ---- カメラ画面 ---- */
-  #cameraScreen{ position:relative; background:#000; align-items:center; justify-content:center; }
-  #remoteVideo{ width:100%; height:100%; object-fit:contain; background:#000; }
+  /* ---- カメラ画面（最大2台まで分割表示） ---- */
+  #cameraScreen{ position:relative; background:#000; align-items:stretch; justify-content:stretch; }
+  .cam-grid{ display:flex; width:100%; height:100%; }
+  .cam-slot{ flex:1; position:relative; background:#000; display:flex; align-items:center; justify-content:center; }
+  .cam-slot + .cam-slot{ border-left:2px solid #1a1f2b; }
+  .cam-slot video{ width:100%; height:100%; object-fit:contain; background:#000; }
+  .cam-slot .cam-empty{ font-size:22px; color:#5c6577; text-align:center; padding:0 20px; }
   .cam-overlay{
     position:absolute; top:24px; left:24px; padding:8px 18px; border-radius:10px;
-    background:rgba(15,110,100,0.85); font-size:22px; font-weight:700; letter-spacing:0.02em;
+    background:rgba(15,110,100,0.85); font-size:22px; font-weight:700; letter-spacing:0.02em; z-index:2;
   }
   .cam-waiting{ font-size:28px; color:#8a93a6; text-align:center; }
 
@@ -73,8 +77,10 @@
 <!-- カメラ映像画面（ラウンド受付中） -->
 <div class="screen" id="cameraScreen">
   <div class="cam-overlay" id="camOverlay" style="display:none;"></div>
-  <video id="remoteVideo" autoplay playsinline></video>
-  <div class="cam-waiting" id="camWaiting">カメラ映像を準備中です…</div>
+  <div class="cam-grid" id="camGrid">
+    <div class="cam-slot" id="camSlot1"><div class="cam-empty">カメラ1：接続待ち</div></div>
+    <div class="cam-slot" id="camSlot2" style="display:none;"><div class="cam-empty">カメラ2：接続待ち</div></div>
+  </div>
 </div>
 
 <!-- ダッシュボード画面（受付中以外） -->
@@ -103,15 +109,14 @@
   const socket = io();
   const cameraScreen = document.getElementById('cameraScreen');
   const dashboardScreen = document.getElementById('dashboardScreen');
-  const remoteVideo = document.getElementById('remoteVideo');
-  const camWaiting = document.getElementById('camWaiting');
   const camOverlay = document.getElementById('camOverlay');
+  const camSlot1 = document.getElementById('camSlot1');
+  const camSlot2 = document.getElementById('camSlot2');
 
   let rounds = [];
   let choiceSettings = ['1', '2', '3', '4', '5'];
-  let cameraOnline = false;
-  let currentPc = null;
-  let currentCameraId = null;
+  let cameraList = []; // [{id, slot}, ...] サーバーから通知される現在接続中のカメラ一覧
+  const peerConnections = {}; // cameraId -> RTCPeerConnection
   let publicScreenMode = 'auto'; // 'auto' | 'camera' | 'dashboard'（管理画面から手動で切り替え可能）
 
   function getCurrentRound() {
@@ -150,7 +155,7 @@
     if (showCamera) {
       camOverlay.style.display = 'block';
       camOverlay.textContent = round ? `ラウンド${round.id} 受付中` : '手動切替中';
-      ensureViewerConnection();
+      ensureViewerConnections();
     } else {
       renderDashboard();
     }
@@ -255,56 +260,70 @@
     if (i === -1) rounds.push(round); else rounds[i] = round;
   }
 
-  // ---------- カメラ映像（WebRTC視聴側） ----------
-  socket.on('camera-status', ({ online }) => { cameraOnline = online; if (cameraScreen.classList.contains('active')) ensureViewerConnection(); });
-  socket.on('camera-online', () => { cameraOnline = true; if (cameraScreen.classList.contains('active')) ensureViewerConnection(); });
-  socket.on('camera-offline', () => {
-    cameraOnline = false;
-    closePeerConnection();
-    camWaiting.style.display = 'block';
-    camWaiting.textContent = 'カメラが接続されていません。';
-  });
+  // ---------- カメラ映像（WebRTC視聴側・最大2台を分割表示） ----------
+  function slotElement(slot) { return slot === 2 ? camSlot2 : camSlot1; }
 
-  function ensureViewerConnection() {
-    if (!cameraOnline) {
-      camWaiting.style.display = 'block';
-      camWaiting.textContent = 'カメラ映像を準備中です…';
-      return;
-    }
-    if (currentPc) return; // 既に接続済み/接続試行中
-    socket.emit('viewer-join');
+  function renderCamLayout() {
+    // カメラが1台なら1枠のみ表示（全画面）、2台なら2枠を横に並べる
+    camSlot2.style.display = cameraList.length >= 2 ? 'flex' : 'none';
+    cameraList.forEach(cam => {
+      const slotEl = slotElement(cam.slot);
+      if (!peerConnections[cam.id] || !slotEl.querySelector('video')) {
+        slotEl.innerHTML = `<div class="cam-empty">カメラ${cam.slot}：接続中…</div>`;
+      }
+    });
+    // 現在接続していないスロットは「接続待ち」表示にする
+    [1, 2].forEach(slotNum => {
+      const stillExpected = cameraList.some(c => c.slot === slotNum);
+      if (!stillExpected) slotElement(slotNum).innerHTML = `<div class="cam-empty">カメラ${slotNum}：接続待ち</div>`;
+    });
   }
 
-  function closePeerConnection() {
-    if (currentPc) { currentPc.close(); currentPc = null; }
-    currentCameraId = null;
-    remoteVideo.srcObject = null;
+  socket.on('camera-list', ({ cameras }) => {
+    cameraList = cameras;
+    renderCamLayout();
+    if (cameraScreen.classList.contains('active')) ensureViewerConnections();
+  });
+
+  socket.on('camera-disconnected', ({ cameraId }) => {
+    const pc = peerConnections[cameraId];
+    if (pc) { pc.close(); delete peerConnections[cameraId]; }
+  });
+
+  function ensureViewerConnections() {
+    if (!cameraList.length) return; // renderCamLayoutが「接続待ち」表示を出す
+    const needsConnection = cameraList.some(cam => !peerConnections[cam.id]);
+    if (needsConnection) socket.emit('viewer-join');
   }
 
   socket.on('webrtc-signal', async ({ fromId, type, payload }) => {
     if (type === 'offer') {
-      closePeerConnection();
-      currentCameraId = fromId;
+      if (peerConnections[fromId]) { peerConnections[fromId].close(); delete peerConnections[fromId]; }
+      const camInfo = cameraList.find(c => c.id === fromId);
+      const slotEl = slotElement(camInfo ? camInfo.slot : 1);
       const pc = new RTCPeerConnection();
       pc.ontrack = (e) => {
-        remoteVideo.srcObject = e.streams[0];
-        camWaiting.style.display = 'none';
+        slotEl.innerHTML = '';
+        const video = document.createElement('video');
+        video.autoplay = true; video.playsInline = true;
+        video.srcObject = e.streams[0];
+        slotEl.appendChild(video);
       };
       pc.onicecandidate = (e) => {
         if (e.candidate) socket.emit('webrtc-signal', { targetId: fromId, type: 'ice-candidate', payload: e.candidate });
       };
       pc.onconnectionstatechange = () => {
-        if (['disconnected', 'failed', 'closed'].includes(pc.connectionState) && currentPc === pc) {
-          closePeerConnection();
+        if (['disconnected', 'failed', 'closed'].includes(pc.connectionState) && peerConnections[fromId] === pc) {
+          delete peerConnections[fromId];
         }
       };
-      currentPc = pc;
+      peerConnections[fromId] = pc;
       await pc.setRemoteDescription(new RTCSessionDescription(payload));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       socket.emit('webrtc-signal', { targetId: fromId, type: 'answer', payload: answer });
-    } else if (type === 'ice-candidate' && currentPc && fromId === currentCameraId) {
-      try { await currentPc.addIceCandidate(new RTCIceCandidate(payload)); } catch (e) { /* 無視 */ }
+    } else if (type === 'ice-candidate' && peerConnections[fromId]) {
+      try { await peerConnections[fromId].addIceCandidate(new RTCIceCandidate(payload)); } catch (e) { /* 無視 */ }
     }
   });
 </script>

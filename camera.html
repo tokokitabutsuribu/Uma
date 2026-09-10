@@ -96,7 +96,22 @@
     }
   });
 
+  socket.on('camera-register-error', (err) => {
+    camDot.classList.remove('on'); camDot.classList.add('warn');
+    camStatus.textContent = err.message + '（他のカメラが切断されるまでお待ちください）';
+    startBtn.textContent = 'カメラを起動して送信開始';
+    startBtn.disabled = false;
+    if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+    localVideo.srcObject = null;
+  });
+
+  socket.on('camera-list', ({ cameras }) => {
+    const mine = cameras.find(c => c.id === socket.id);
+    if (mine) camStatus.textContent = `カメラ起動中・送信可能（スロット${mine.slot}）`;
+  });
+
   function createPeerConnectionFor(viewerId) {
+    if (peerConnections[viewerId]) return peerConnections[viewerId]; // 二重接続防止
     const pc = new RTCPeerConnection();
     if (localStream) {
       localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -123,6 +138,7 @@
   }
 
   socket.on('viewer-joined', async ({ viewerId }) => {
+    if (peerConnections[viewerId]) return; // 既に接続済みなら何もしない（二重オファー防止）
     viewers.add(viewerId);
     viewerCount.textContent = `視聴中の客画面：${viewers.size}台`;
     const pc = createPeerConnectionFor(viewerId);

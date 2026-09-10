@@ -117,9 +117,12 @@
 
   .bet-error{ font-size:13px; color:#f0a26a; min-height:16px; }
   .bet-done{
-    display:flex; flex-direction:column; gap:10px; align-items:center; text-align:center; padding:10px 0;
+    display:flex; flex-direction:column; gap:12px; align-items:stretch; text-align:center; padding:10px 0;
   }
-  .bet-done .big{ font-size:17px; font-weight:700; }
+  .bet-done .big{ font-size:17px; font-weight:700; text-align:center; }
+  .bet-done button{
+    width:100%; padding:18px 0; border-radius:11px; border:none; font-size:18px; font-weight:700; cursor:pointer;
+  }
 </style>
 </head>
 <body>
@@ -185,7 +188,7 @@
 
     <div class="bet-done hidden" id="betDone">
       <div class="big" id="betDoneText"></div>
-      <button class="btn-submit" id="betAnotherBtn" style="flex:none; padding:11px 20px;">もう1回賭ける</button>
+      <button class="btn-submit" id="betAnotherBtn">もう1回賭ける</button>
       <button class="btn-cancel" id="betDoneCloseBtn">閉じる</button>
     </div>
   </div>
@@ -288,6 +291,7 @@
 
   function openBetOverlay(round, participant, betsSoFar) {
     betsSoFar = betsSoFar || [];
+    if (participant.score <= 0) { showNoFundsState(round, participant, betsSoFar); return; }
     betState = { round, participant, type: 'single', single: null, trifecta: [], betsSoFar };
     const remaining = MAX_BETS_PER_PARTICIPANT - betsSoFar.length;
     betTitle.textContent = `ラウンド${round.id}：ID ${participant.id} さんの参加登録`;
@@ -301,6 +305,17 @@
     betDone.classList.add('hidden');
     renderChoiceType();
     renderStakeQuick(participant.score);
+    betOverlay.classList.remove('hidden');
+  }
+
+  // 所持ジュール数が0の場合、賭け入力フォームは出さずその旨を表示するだけにする
+  function showNoFundsState(round, participant, betsSoFar) {
+    betState = { round, participant, type: 'single', single: null, trifecta: [], betsSoFar: betsSoFar || [] };
+    betTitle.textContent = `ラウンド${round.id}：ID ${participant.id} さんの参加登録`;
+    betCardBody.forEach(el => el.classList.add('hidden'));
+    betDone.classList.remove('hidden');
+    betDoneText.textContent = '所持ジュール数が0のため、これ以上賭けられません。';
+    betAnotherBtn.classList.add('hidden');
     betOverlay.classList.remove('hidden');
   }
 
@@ -423,12 +438,19 @@
       ? betState.round.choices[bet.selection]
       : bet.selection.map(i => betState.round.choices[i]).join(' → ');
     const remaining = MAX_BETS_PER_PARTICIPANT - (betsSoFar ? betsSoFar.length : 1);
+    const canBetAgain = remaining > 0 && participant.score > 0;
     let text = `受付完了：${bet.type === 'single' ? '単勝' : '3連単'} 「${choiceText}」に ${bet.stake}J を賭けました。`;
-    text += remaining > 0 ? `（現在の所持ジュール数: ${participant.score}J）あと${remaining}回賭けられます。` : '結果発表をお待ちください。';
+    if (canBetAgain) {
+      text += `（現在の所持ジュール数: ${participant.score}J）あと${remaining}回賭けられます。`;
+    } else if (remaining > 0 && participant.score <= 0) {
+      text += '所持ジュール数が0になったため、これ以上賭けられません。結果発表をお待ちください。';
+    } else {
+      text += '結果発表をお待ちください。';
+    }
     betDoneText.textContent = text;
 
-    betAnotherBtn.classList.toggle('hidden', remaining <= 0);
-    if (remaining > 0) {
+    betAnotherBtn.classList.toggle('hidden', !canBetAgain);
+    if (canBetAgain) {
       betAnotherBtn.onclick = () => openBetOverlay(betState.round, participant, betsSoFar);
     }
   });
