@@ -112,6 +112,7 @@
   let cameraOnline = false;
   let currentPc = null;
   let currentCameraId = null;
+  let publicScreenMode = 'auto'; // 'auto' | 'camera' | 'dashboard'（管理画面から手動で切り替え可能）
 
   function getCurrentRound() {
     if (!rounds.length) return null;
@@ -136,12 +137,19 @@
   // ---------- 画面切り替え ----------
   function updateScreen() {
     const round = getCurrentRound();
-    const showCamera = round && round.status === 'open';
+    let showCamera;
+    if (publicScreenMode === 'camera') {
+      showCamera = true;
+    } else if (publicScreenMode === 'dashboard') {
+      showCamera = false;
+    } else {
+      showCamera = !!(round && round.status === 'open'); // 自動モード：従来通りラウンド状態に連動
+    }
     cameraScreen.classList.toggle('active', showCamera);
     dashboardScreen.classList.toggle('active', !showCamera);
     if (showCamera) {
       camOverlay.style.display = 'block';
-      camOverlay.textContent = `ラウンド${round.id} 受付中`;
+      camOverlay.textContent = round ? `ラウンド${round.id} 受付中` : '手動切替中';
       ensureViewerConnection();
     } else {
       renderDashboard();
@@ -151,9 +159,15 @@
   // ---------- ダッシュボード描画 ----------
   function renderDashboard() {
     const round = getCurrentRound();
-    document.getElementById('roundLabel').textContent = round && round.status === 'closed'
-      ? `ラウンド${round.id} 受付終了・結果待ち`
-      : '次のラウンドを準備中です';
+    let label;
+    if (round && round.status === 'closed') {
+      label = `ラウンド${round.id} 受付終了・結果待ち`;
+    } else if (round && round.status === 'open') {
+      label = `ラウンド${round.id} 受付中（手動でボード表示中）`;
+    } else {
+      label = '次のラウンドを準備中です';
+    }
+    document.getElementById('roundLabel').textContent = label;
 
     // 現在のレート
     const ratedRound = getLastRatedRound();
@@ -227,6 +241,7 @@
   socket.on('full-state', (state) => {
     rounds = state.rounds || [];
     choiceSettings = state.choiceSettings || choiceSettings;
+    publicScreenMode = state.publicScreenMode || 'auto';
     updateScreen();
   });
   socket.on('round-started', ({ round }) => { upsertRound(round); updateScreen(); });
@@ -234,6 +249,7 @@
   socket.on('round-closed', ({ round }) => { upsertRound(round); updateScreen(); });
   socket.on('round-settled', ({ round }) => { upsertRound(round); updateScreen(); });
   socket.on('state-cleared', () => { rounds = []; updateScreen(); });
+  socket.on('public-mode-changed', ({ mode }) => { publicScreenMode = mode; updateScreen(); });
   function upsertRound(round) {
     const i = rounds.findIndex(r => r.id === round.id);
     if (i === -1) rounds.push(round); else rounds[i] = round;

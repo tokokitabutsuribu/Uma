@@ -127,6 +127,18 @@
   <!-- ラウンド管理 -->
   <div class="view active" id="view-round">
 
+    <!-- 客画面コントロール（常設・ラウンドとは独立） -->
+    <div class="round-section" id="publicControlSection">
+      <h2>客画面コントロール</h2>
+      <div class="sub">客画面（public.html）に何を表示するかを、ここから自由に切り替えられます。「自動」ではラウンドの状態に連動します。</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <button class="btn" id="modeAutoBtn">自動（ラウンドに連動）</button>
+        <button class="btn" id="modeCameraBtn">カメラ表示に固定</button>
+        <button class="btn" id="modeDashboardBtn">結果ボード表示に固定</button>
+        <span id="publicModeStatus" style="font-size:13px; color:#6b7280; margin-left:8px;"></span>
+      </div>
+    </div>
+
     <!-- 選択肢の設定（ラウンドとは独立・常設） -->
     <div class="round-section" id="choiceSettingsSection">
       <h2>選択肢の設定</h2>
@@ -257,6 +269,7 @@
   let adjustments = [];
   let rounds = [];
   let choiceSettings = ['1', '2', '3', '4', '5'];
+  let publicScreenMode = 'auto';
 
   function getCurrentRound() {
     if (!rounds.length) return null;
@@ -280,8 +293,15 @@
     adjustments = state.adjustments;
     rounds = state.rounds;
     choiceSettings = state.choiceSettings || choiceSettings;
+    publicScreenMode = state.publicScreenMode || 'auto';
     renderChoiceSettings();
+    renderPublicModeButtons();
     renderAll();
+  });
+
+  socket.on('public-mode-changed', ({ mode }) => {
+    publicScreenMode = mode;
+    renderPublicModeButtons();
   });
 
   socket.on('choices-updated', ({ choices }) => {
@@ -383,6 +403,24 @@
         <td>${escapeHtml(a.adjustedBy)}</td></tr>`;
     }).join('');
   }
+
+  // ---------- ラウンドタブ：客画面コントロール（常設・ラウンドとは独立） ----------
+  const modeAutoBtn = document.getElementById('modeAutoBtn');
+  const modeCameraBtn = document.getElementById('modeCameraBtn');
+  const modeDashboardBtn = document.getElementById('modeDashboardBtn');
+  const publicModeStatus = document.getElementById('publicModeStatus');
+  const modeLabels = { auto: '自動（ラウンド連動）', camera: 'カメラ表示に固定', dashboard: '結果ボード表示に固定' };
+
+  function renderPublicModeButtons() {
+    [['auto', modeAutoBtn], ['camera', modeCameraBtn], ['dashboard', modeDashboardBtn]].forEach(([key, btn]) => {
+      btn.classList.toggle('primary', publicScreenMode === key);
+    });
+    publicModeStatus.textContent = `現在: ${modeLabels[publicScreenMode] || publicScreenMode}`;
+  }
+
+  [['auto', modeAutoBtn], ['camera', modeCameraBtn], ['dashboard', modeDashboardBtn]].forEach(([key, btn]) => {
+    btn.addEventListener('click', () => socket.emit('set-public-mode', { mode: key }));
+  });
 
   // ---------- ラウンドタブ：選択肢の設定（常設・ラウンドとは独立） ----------
   const choiceInputs = document.getElementById('choiceInputs');

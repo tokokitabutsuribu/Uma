@@ -91,6 +91,8 @@ if (!store.choiceSettings) store.choiceSettings = [...DEFAULT_CHOICES]; // 古�
 
 // カメラ端末（客画面へ映像を送る側）の接続情報。1台のみを想定（後から繋いだ方が優先）。
 let cameraSocketId = null;
+// 客画面の表示モード。'auto'＝ラウンド状態に連動（従来動作）／'camera'＝カメラ固定／'dashboard'＝結果ボード固定
+let publicScreenMode = 'auto';
 
 function saveStore() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -152,6 +154,7 @@ io.on('connection', (socket) => {
     adjustments: store.adjustments,
     rounds: store.rounds,
     choiceSettings: store.choiceSettings,
+    publicScreenMode,
   });
 
   // ---------- QRスキャン（ID読み取り） ----------
@@ -452,6 +455,15 @@ io.on('connection', (socket) => {
   socket.on('webrtc-signal', (msg) => {
     if (!msg || !msg.targetId) return;
     io.to(msg.targetId).emit('webrtc-signal', { fromId: socket.id, type: msg.type, payload: msg.payload });
+  });
+
+  // ---------- 客画面の表示モード切り替え（管理画面から手動操作） ----------
+  socket.on('set-public-mode', (payload) => {
+    const mode = payload && payload.mode;
+    if (!['auto', 'camera', 'dashboard'].includes(mode)) return;
+    publicScreenMode = mode;
+    io.emit('public-mode-changed', { mode: publicScreenMode });
+    console.log(`客画面の表示モードを変更しました: ${mode}`);
   });
 
   socket.on('disconnect', () => {
