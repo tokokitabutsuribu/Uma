@@ -43,6 +43,11 @@
   .round-banner.closed{ background:#3a2c1a; color:#e0b686; }
 
   main{ flex:1; display:flex; flex-direction:column; padding:14px; gap:12px; }
+  .cam-select-row{ display:flex; }
+  .cam-select-row select{
+    width:100%; padding:10px 12px; border-radius:9px; border:1px solid #3a4355;
+    background:var(--panel); color:var(--paper); font-size:14px;
+  }
   #reader{ width:100%; border-radius:14px; overflow:hidden; border:1px solid var(--line); background:#000; }
   #reader video{ width:100% !important; }
 
@@ -137,6 +142,9 @@
 </header>
 
 <main>
+  <div class="cam-select-row">
+    <select id="cameraSelect"></select>
+  </div>
   <div id="reader"></div>
 
   <div class="result-panel" id="resultPanel">
@@ -478,13 +486,33 @@
     return String(str).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   }
 
-  // ---------- カメラ起動 ----------
+  // ---------- カメラ起動・切り替え ----------
   const html5QrCode = new Html5Qrcode("reader");
+  const cameraSelect = document.getElementById('cameraSelect');
+  let currentCameraRunning = false;
+
+  async function startCamera(cameraId) {
+    if (currentCameraRunning) {
+      try { await html5QrCode.stop(); } catch (e) { /* 既に止まっていれば無視 */ }
+      currentCameraRunning = false;
+    }
+    try {
+      await html5QrCode.start(cameraId, { fps: 10, qrbox: { width: 240, height: 240 } }, onScanSuccess);
+      currentCameraRunning = true;
+    } catch (err) {
+      resultId.textContent = 'カメラ起動に失敗しました: ' + err;
+    }
+  }
+
+  cameraSelect.addEventListener('change', () => startCamera(cameraSelect.value));
+
   Html5Qrcode.getCameras().then(cameras => {
     if (!cameras || cameras.length === 0) { resultId.textContent = 'カメラが見つかりません'; return; }
+    cameraSelect.innerHTML = cameras.map((c, i) => `<option value="${c.id}">${c.label || 'カメラ' + (i + 1)}</option>`).join('');
+    // 初期選択は背面カメラを優先（見つからなければ最後の候補）
     const backCam = cameras.find(c => /back|rear|environment/i.test(c.label)) || cameras[cameras.length - 1];
-    html5QrCode.start(backCam.id, { fps: 10, qrbox: { width: 240, height: 240 } }, onScanSuccess)
-      .catch(err => { resultId.textContent = 'カメラ起動に失敗しました: ' + err; });
+    cameraSelect.value = backCam.id;
+    startCamera(backCam.id);
   }).catch(() => { resultId.textContent = 'カメラへのアクセスが許可されていません'; });
 </script>
 </body>
