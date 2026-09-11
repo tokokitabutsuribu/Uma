@@ -36,7 +36,9 @@ const INITIAL_SCORE = 1000;
 const CHOICE_COUNT = 5;
 const DEFAULT_CHOICES = ['1', '2', '3', '4', '5'];
 const MAX_BETS_PER_PARTICIPANT = 2; // 1ラウンドにつき同じIDが賭けられる回数の上限
-const TRIFECTA_RATE_MULTIPLIER = 1.5; // 3連単は単勝より的中しにくいため、按分レートをこの倍率でさらに割増しする
+// レートは「単勝・3連単の賭け金を合算した基礎値」×「賭け方ごとの倍率」で決まる（close-round参照）
+const SINGLE_RATE_MULTIPLIER = 1.0;
+const TRIFECTA_RATE_MULTIPLIER = 1.5; // 3連単は単勝より的中しにくいため、より高い倍率にしている
 
 // ---------- HTTPS証明書（自己署名・自動生成） ----------
 // スマホのカメラ機能（getUserMedia）はHTTPS（安全な接続）でないと
@@ -344,19 +346,20 @@ io.on('connection', (socket) => {
     });
 
     const singleRates = {};
-    round.choices.forEach((_, idx) => {
-      singleRates[idx] = singleStakes[idx] ? +(singlePool / singleStakes[idx]).toFixed(2) : null;
-    });
     const trifectaRates = {};
+    // 単勝・3連単の賭け金を合算した「基礎値」を元に、賭け方ごとの倍率をかけて最終レートを決める
+    const combinedPool = singlePool + trifectaPool;
+    round.choices.forEach((_, idx) => {
+      singleRates[idx] = singleStakes[idx] ? +((combinedPool / singleStakes[idx]) * SINGLE_RATE_MULTIPLIER).toFixed(2) : null;
+    });
     Object.keys(trifectaStakes).forEach(key => {
-      // 3連単は的中しにくいため、通常の按分レートにさらに倍率をかけて高配当にする
-      trifectaRates[key] = +((trifectaPool / trifectaStakes[key]) * TRIFECTA_RATE_MULTIPLIER).toFixed(2);
+      trifectaRates[key] = +((combinedPool / trifectaStakes[key]) * TRIFECTA_RATE_MULTIPLIER).toFixed(2);
     });
 
     round.status = 'closed';
     round.closedAt = new Date().toISOString();
     round.closedDisplay = nowDisplay();
-    round.pools = { single: singlePool, trifecta: trifectaPool };
+    round.pools = { single: singlePool, trifecta: trifectaPool, combined: combinedPool };
     round.rates = { single: singleRates, trifecta: trifectaRates };
     saveStore();
     io.emit('round-closed', { round });
