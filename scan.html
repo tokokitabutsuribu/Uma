@@ -49,7 +49,7 @@
     background:var(--panel); color:var(--paper); font-size:14px;
   }
   #reader{ width:100%; border-radius:14px; overflow:hidden; border:1px solid var(--line); background:#000; }
-  #reader video{ width:100% !important; }
+  #reader video{ width:100% !important; transform:scaleX(-1); }
 
   .result-panel{
     border-radius:14px; padding:18px; min-height:96px; display:flex; flex-direction:column;
@@ -67,6 +67,18 @@
 
   .hint{ font-size:12px; color:#8a93a6; line-height:1.6; padding:0 4px; }
   .count-badge{ font-size:12px; color:#9aa3b5; }
+
+  .manual-entry{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; display:flex; flex-direction:column; gap:8px;
+  }
+  .manual-label{ font-size:12px; color:#9aa3b5; }
+  .manual-row{ display:flex; gap:8px; }
+  .manual-row input{
+    flex:1; padding:11px 12px; border-radius:8px; border:1px solid #3a4355; background:#151a23; color:var(--paper); font-size:15px;
+  }
+  .manual-row button{
+    padding:11px 20px; border-radius:8px; border:none; background:var(--teal); color:#fff; font-size:15px; font-weight:600; cursor:pointer;
+  }
 
   /* ---- ベット入力パネル ---- */
   .bet-overlay{
@@ -154,6 +166,14 @@
   </div>
 
   <div class="count-badge" id="countBadge">この端末での読み取り回数：0</div>
+
+  <div class="manual-entry">
+    <div class="manual-label">読み取れない場合は、IDを直接入力してください</div>
+    <div class="manual-row">
+      <input type="text" id="manualIdInput" placeholder="IDを入力">
+      <button id="manualSubmitBtn">送信</button>
+    </div>
+  </div>
 
   <p class="hint">参加者のQRコード（ID）をカメラに映すと自動で読み取られます。ラウンド受付中は、続けてこの画面で賭け金と予想を入力してもらってください。</p>
 </main>
@@ -259,6 +279,19 @@
     scanCount += 1;
     countBadge.textContent = `この端末での読み取り回数：${scanCount}`;
   }
+
+  // ---------- 手動ID入力（QRが読み取れない場合の代替手段） ----------
+  const manualIdInput = document.getElementById('manualIdInput');
+  const manualSubmitBtn = document.getElementById('manualSubmitBtn');
+
+  function submitManualId() {
+    const value = manualIdInput.value.trim();
+    if (!value) return;
+    onScanSuccess(value); // カメラ読み取りと同じ処理経路を通す
+    manualIdInput.value = '';
+  }
+  manualSubmitBtn.addEventListener('click', submitManualId);
+  manualIdInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitManualId(); });
 
   socket.on('scan-ack', (ack) => {
     resultId.textContent = `ID: ${ack.participantId}`;
